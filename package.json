@@ -1,0 +1,37 @@
+{
+  "name": "bespingle",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:frontend": "vite --host 127.0.0.1 --port 5555 --strictPort",
+    "dev:backend": "go run ./server",
+    "build": "tsc -b && vite build",
+    "test:backend": "go test -race ./server",
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "test:grid": "node scripts/grid-smoke.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "playwright": "^1.64.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.0"
+  },
+  "description": "A shared pixel office with smooth tile movement and direct peer-to-peer audio and video.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DanbisDev/bespingle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DanbisDev/bespingle/issues"
+  }
+}

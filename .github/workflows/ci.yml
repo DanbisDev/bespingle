@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go test -race ./server
+      - run: go vet ./server
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build production image
+        run: docker build --tag bespingle:ci .
+      - name: Check production HTTP server
+        run: |
+          docker run --detach --name bespingle-ci --publish 127.0.0.1:8080:8080 bespingle:ci
+          curl --fail --retry 12 --retry-connrefused --retry-delay 1 --max-time 5 http://127.0.0.1:8080/api/health
+          curl --fail --silent --show-error --output /tmp/bespingle-index.html http://127.0.0.1:8080/
+          grep -q '<div id="root">' /tmp/bespingle-index.html
+      - name: Container logs
+        if: always()
+        run: docker logs bespingle-ci
+      - name: Clean up container
+        if: always()
+        run: docker rm --force bespingle-ci

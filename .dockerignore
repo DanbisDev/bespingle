@@ -1,0 +1,30 @@
+# Only source files needed to build the application enter the Docker context.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!go.mod
+!go.sum
+!LICENSE
+!src/
+!src/**
+!public/
+!public/**
+!server/
+!server/*.go
+!server/world.json
+
+# Keep local credentials out even if they are placed below an included directory.
+**/.env*
+**/.npmrc
+**/.netrc
+**/.git
+**/.aws
+**/.ssh
+**/*credentials*
+**/*.pem
+**/*.key

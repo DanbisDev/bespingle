@@ -1,0 +1,160 @@
+# Bespingle
+
+A shared pixel office with a full-window, night-themed game area and direct
+browser-to-browser audio and video. Walk onto a carpet to join a conversation;
+walk off to leave it. Built with React, TypeScript, Go, and WebRTC.
+
+Bespingle is an early proof of concept, published under the [MIT license](LICENSE).
+The office is open to anyone with its link. There are no accounts, passwords,
+attendance limits, or saved profiles. A server restart clears the office and
+disconnects its participants.
+
+## Run locally
+
+Requires Node.js 22.12+ and Go 1.26+.
+
+```sh
+npm ci
+npm run dev
+```
+
+Open [http://localhost:5555](http://localhost:5555) in two browser windows. Each
+window joins as a separate person. The React development server runs on port
+5555; Go runs on `127.0.0.1:6666`. Vite proxies `/ws` and `/api` so the browser
+uses only port 5555. Ctrl+C stops both services.
+
+To start them separately, run `npm run dev:backend` and
+`npm run dev:frontend` in separate terminals.
+
+## Explore the office
+
+- Choose a display name and one of six pixel avatars. Click your profile to
+  change your name later.
+- Move with **WASD**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
+  The hidden grid reserves both the source and destination during a step, so
+  players cannot share tiles or swap through one another. A blocked move into
+  another player makes the moving avatar bounce back. Walls block movement;
+  furniture does not.
+- **Scroll over the game area** to zoom. The camera follows your avatar.
+- Share a carpet to talk. The Nook, The Studio, and The Commons have 2, 4, and 8
+  visual chairs, with no attendance caps. Walking onto a chair tile seats your
+  avatar visually; the carpet determines conversation membership.
+- On your first carpet entry, choose **both**, **microphone only**, **video only**,
+  or **neither**. Neither still receives other participants' media.
+- Enabled devices stay on across carpets and the open floor until you switch
+  them off with the HUD controls or leave the game. The choice is remembered
+  for that game session; entering another carpet does not prompt again.
+- Click the video strip or **Expand** to cover the game area with videos.
+  Movement pauses while videos are expanded.
+- **Leave office** stops local devices. A new game starts with devices off.
+
+## Direct audio and video
+
+The Go server handles names, positions, carpet membership, device flags, and
+WebRTC connection setup over WebSocket. It does not receive or forward audio or
+video. Browsers send media directly to other participants on the same carpet.
+Leaving a carpet closes those peer connections. Local devices may remain on,
+but no media is sent to other participants while you are on the open floor.
+
+Connection discovery uses `stun:stun.cloudflare.com:3478`.
+[Cloudflare documents its public STUN service as free and unlimited](https://developers.cloudflare.com/realtime/turn/faq/).
+There is no TURN relay fallback, so calls may fail on networks that prevent a
+direct WebRTC connection. Remote microphone and camera access requires HTTPS;
+localhost is suitable for development.
+
+Capture targets 1280×720 at 30 fps; actual quality depends on the device,
+browser, and connection. Each browser sends one copy to every other participant
+in its call. Eight people sharing a carpet create 28 peer connections, with up
+to seven outgoing streams per person. Hosting avoids media relay bandwidth, but
+participants still need enough upload capacity for those copies.
+
+Microphone and camera controls work independently. Disabling one stops only
+its own track. Leaving the game stops all capture, including late permission
+results. Use headphones when testing multiple windows in the same physical room.
+
+## Production container
+
+The multi-stage Docker build compiles the frontend and Go server into one
+container. Go serves the built app, `/api`, and `/ws` on the same port. There is
+no Vite server in production.
+
+```sh
+docker build -t bespingle .
+docker run --rm -p 8080:8080 -e ALLOWED_ORIGINS=http://localhost:8080 bespingle
+```
+
+Open [http://localhost:8080](http://localhost:8080). The container uses
+`HOST=0.0.0.0`, `PORT=8080`, and `STATIC_DIR=/app/dist` by default. Go reads process
+environment variables; it does not automatically load `.env` files. See
+[.env.example](.env.example) for the available settings.
+
+## Deploy on Railway
+
+Connect a Railway service to [DanbisDev/bespingle](https://github.com/DanbisDev/bespingle)
+and select **master** as its deployment branch. Keep the repository root as the
+build directory and use its `Dockerfile`. Set the healthcheck path to
+`/api/health` with a 120-second timeout, and run **one replica**. Generate a public
+HTTPS domain for the service.
+
+The server listens on Railway's injected `PORT`. It allows WebSocket connections
+from the exact HTTPS origin derived from `RAILWAY_PUBLIC_DOMAIN`. For an
+additional domain, set `ALLOWED_ORIGINS` to comma-separated full origins such as
+`https://office.example.com`; include every origin you intend to allow.
+
+Pushes to the connected **master** branch trigger native GitHub autodeploys.
+Railway provides the public HTTPS domain. See the official
+[GitHub autodeploy documentation](https://docs.railway.com/deployments/github-autodeploys)
+and [healthcheck documentation](https://docs.railway.com/deployments/healthchecks).
+
+All participants and movement reservations live in the Go process. Deployments
+restart that process and disconnect existing sessions. Multiple replicas would
+create separate offices because state is not shared. This version needs no
+database or persistent volume.
+
+## Checks
+
+```sh
+npm run build
+npm run test:backend
+```
+
+With the local development stack running in another terminal:
+
+```sh
+npx playwright install chromium
+npm run test:grid
+npm run test:browser
+```
+
+Alternatively, use an existing Chrome installation:
+
+```sh
+CHROME_PATH=/absolute/path/to/google-chrome npm run test:grid
+CHROME_PATH=/absolute/path/to/google-chrome npm run test:browser
+```
+
+The browser checks use synthetic microphones and cameras. They cover grid
+movement and collisions, carpet membership, game-area sizing, zoom, media
+connections, device reuse, and device shutdown. Screenshots go to the ignored
+`test-results/browser/` directory. Backend checks include race detection,
+movement reservations, signaling isolation, and invalid messages and origins.
+
+## Project layout
+
+| Path | Purpose |
+| --- | --- |
+| `src/App.tsx` | Join/profile UI, media prompt, video strip, and HUD |
+| `src/GameCanvas.tsx` | Game rendering, follow camera, zoom, and tile movement |
+| `src/art.ts`, `src/avatarArt.ts` | Code-drawn pixel office and avatars |
+| `src/useGame.ts` | WebSocket state and signaling delivery |
+| `src/usePeerMedia.ts` | Peer connections and device lifecycle |
+| `src/world.ts` | Shared map types, tile helpers, and wall collision |
+| `server/world.json` | Map geometry, carpets, chairs, and furniture |
+| `server/` | In-memory office, authoritative movement, signaling, and HTTP serving |
+
+The Go binary embeds the map at build time. Restart Go after editing
+`server/world.json`; Vite reloads the frontend automatically.
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Bespingle's source and code-drawn artwork are MIT licensed. Dependencies retain
+their respective licenses.
