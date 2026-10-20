@@ -16,7 +16,10 @@ type Position = { x: number; y: number; facing: string };
 type PendingStep = { id: string; fromX: number; fromY: number; toX: number; toY: number };
 type Bounce = { id: string; direction: Direction; startedAt: number };
 
-const directions: Record<string, Direction> = { KeyW: 'up', KeyA: 'left', KeyS: 'down', KeyD: 'right' };
+const directions: Record<string, Direction> = {
+  KeyW: 'up', KeyA: 'left', KeyS: 'down', KeyD: 'right',
+  ArrowUp: 'up', ArrowLeft: 'left', ArrowDown: 'down', ArrowRight: 'right',
+};
 const vectors: Record<Direction, readonly [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 // Tall sprites and their labels may extend above the walkable world.
 const cameraHeadroom = 32;
@@ -320,11 +323,11 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
   return (
     <div ref={viewportRef} className="game-world" data-testid="game-world" style={{ position: 'absolute', inset: 0, minHeight: 0, overflow: 'hidden' }}>
       <canvas ref={canvasRef} tabIndex={0} role="img"
-        aria-label="Game area. Use W A S D to move one tile at a time; hold a key to keep walking. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
+        aria-label="Game area. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
         data-testid="game-canvas" data-player-count={players.length}
         onPointerDown={(event) => event.currentTarget.focus({ preventScroll: true })}
         style={{ display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated', outline: 'none' }}>
-        An interactive game area with three conversation carpets. Use W A S D to move by tiles and scroll to zoom.
+        An interactive game area with three conversation carpets. Use W A S D or arrow keys to move by tiles and scroll to zoom.
       </canvas>
     </div>
   );

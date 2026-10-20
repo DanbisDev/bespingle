@@ -146,7 +146,7 @@ export default function App() {
           <button className={self?.camera ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.camera ? 'Turn camera off' : 'Turn camera on'} aria-pressed={self?.camera ?? false} onClick={() => { void media.chooseMedia(self?.mic ?? false, !self?.camera); }}><Icon name="camera" off={!self?.camera} /><span>{self?.camera ? 'Camera on' : 'Camera off'}</span></button>
           <span className="hud-divider" /><button className="leave-button" disabled={!connected} onClick={game.leave} aria-label="Leave office"><Icon name="exit" /></button>
         </div>
-        <div className="movement-hint"><span><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>WASD to walk by tiles<small>Scroll to zoom</small></span></div>
+        <div className="movement-hint"><span><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>WASD or arrow keys to walk<small>Scroll to zoom</small></span></div>
       </footer>
       {(game.error || (media.error && !isMediaPrompt)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
     </main>

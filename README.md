@@ -30,7 +30,7 @@ To start them separately, run `npm run dev:backend` and
 
 - Choose a display name and one of six pixel avatars. Click your profile to
   change your name later.
-- Move with **WASD**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
+- Move with **WASD or the arrow keys**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
   The hidden grid reserves both the source and destination during a step, so
   players cannot share tiles or swap through one another. A blocked move into
   another player makes the moving avatar bounce back. Walls block movement;
