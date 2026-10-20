@@ -83,7 +83,7 @@ async function waitIdle(page) {
     // An acknowledgement may arrive before its state frame. For the latest
     // accepted request, wait for that destination's authoritative landing.
     const lastMove = moves.at(-1);
-    if (lastMove && results.get(lastMove.requestId).accepted && (self.x !== lastMove.x || self.y !== lastMove.y)) return false;
+    if (lastMove && !lastMove.sprint && results.get(lastMove.requestId).accepted && (self.x !== lastMove.x || self.y !== lastMove.y)) return false;
     return canvas.dataset.moving !== 'true' && canvas.dataset.bouncing !== 'true' &&
       Number(canvas.dataset.x) === self.x && Number(canvas.dataset.y) === self.y &&
       Number(canvas.dataset.renderX) === self.x && Number(canvas.dataset.renderY) === self.y;
@@ -206,6 +206,25 @@ try {
 
   // Spawn tie-breaking may choose any nearest free neighbor; clear the tap lane.
   await go(bob, { x: 552, y: 696 });
+  const beforeSprint = await state(alice);
+  await focus(alice);
+  await alice.keyboard.down('Shift');
+  await alice.keyboard.down('d');
+  try {
+    await alice.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]').dataset.moving === 'true');
+  } finally {
+    await alice.keyboard.up('d');
+    await alice.keyboard.up('Shift');
+  }
+  const sprinting = await serverPlayer(alice);
+  assert.equal(sprinting.move.toX, beforeSprint.x + 3 * grid.size, 'Shift moves three tiles per tick');
+  assert.equal(sprinting.move.durationMs, grid.stepDurationMs, 'Sprint uses the same tick duration as walking');
+  await waitAt(alice, { x: beforeSprint.x + 3 * grid.size, y: beforeSprint.y });
+  await waitIdle(alice);
+  await alice.screenshot({ path: output + '/10-sprint-controls.png', fullPage: true });
+  await go(alice, { x: beforeSprint.x, y: beforeSprint.y });
+  console.log('Shift sprint covers three tiles per tick and releasing Shift restores walking');
+
   const beforeTap = await state(alice);
   await step(alice, 'd', async (before, target) => {
     await alice.waitForFunction(({ from, to }) => {

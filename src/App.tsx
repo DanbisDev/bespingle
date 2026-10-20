@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
 import { AVATARS, world } from './world';
 import type { Player } from './world';
@@ -8,9 +9,15 @@ import { useGame } from './useGame';
 import { usePeerMedia } from './usePeerMedia';
 import type { RemoteMedia } from './usePeerMedia';
 
-type IconName = 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
+type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
+const reactions = [
+  { emoji: '👋', label: 'Wave' }, { emoji: '👍', label: 'Thumbs up' },
+  { emoji: '❤️', label: 'Love' }, { emoji: '😂', label: 'Laugh' },
+  { emoji: '🎉', label: 'Celebrate' }, { emoji: '🤔', label: 'Thinking' },
+];
 function Icon({ name, off = false }: { name: IconName; off?: boolean }) {
   const paths: Record<IconName, ReactNode> = {
+    screen: <><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8m-4-4v4m-4-11 4-4 4 4m-4-4v7" /></>,
     mic: <><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>,
     camera: <><rect x="3" y="6" width="12" height="12" rx="3" /><path d="m15 10 6-4v12l-6-4" /></>,
     expand: <path d="M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6" />,
@@ -59,7 +66,7 @@ function Dialog({ children, title, description, className = '' }: { children: Re
   </div></div>;
 }
 
-function VideoTile({ player, stream, local, media }: { player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia }) {
+function VideoTile({ player, stream, local, media, screen = false }: { player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
   const [playBlocked, setPlayBlocked] = useState(false);
   useEffect(() => {
@@ -70,10 +77,10 @@ function VideoTile({ player, stream, local, media }: { player: Player; stream: M
     return () => { element.srcObject = null; };
   }, [stream]);
   const connectionLabel = local ? 'You' : media?.status === 'connected' ? '' : media?.status === 'failed' ? 'Cannot connect directly' : media?.status === 'disconnected' ? 'Disconnected' : 'Connecting…';
-  return <div className={`video-tile ${player.camera && stream ? 'has-video' : ''}`} data-testid={`video-${local ? 'self' : 'peer'}`}>
+  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
     <div className="video-avatar"><Avatar avatar={player.avatar} size={64} /></div>
-    <video ref={video} autoPlay playsInline muted={local} aria-label={`${player.name}${local ? ' (you)' : ''} video`} />
-    <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}</span><Icon name="mic" off={!player.mic} /></div>
+    <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
+    <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
     {connectionLabel && !local && <span className="connection-label">{connectionLabel}</span>}
     {playBlocked && !local && <button className="play-audio" onClick={(event) => { event.stopPropagation(); void video.current?.play().then(() => setPlayBlocked(false)).catch(() => {}); }}>Play audio</button>}
   </div>;
@@ -132,21 +139,28 @@ export default function App() {
                 <button className="expand-button" aria-label={expanded ? 'Return to game' : 'Enlarge conversation videos'} onClick={() => setExpanded((current) => !current)}><Icon name={expanded ? 'close' : 'expand'} /><span>{expanded ? 'Back to game' : 'Expand'}</span></button>
               </div>
               <div className="video-grid" role="button" tabIndex={0} aria-label={expanded ? 'Shrink conversation videos' : 'Enlarge conversation videos'} onClick={() => setExpanded((current) => !current)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setExpanded((current) => !current); } }}>
+                {members.filter((player) => player.id === self?.id ? !!media.screenStream : player.screen).map((player) => <VideoTile key={`screen-${player.id}`} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
                 {members.map((player) => <VideoTile key={player.id} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
               </div>
               {expanded && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
             </> : <div className="quiet-floor"><Icon name="people" /><span>Walk onto a carpet to start a conversation.</span><span className={`quiet-status ${self?.mic || self?.camera ? 'is-enabled' : ''}`}><i />{self?.mic && self?.camera ? 'Mic & camera on' : self?.mic ? 'Microphone on' : self?.camera ? 'Camera on' : 'Devices off'}</span></div>}
           </div>
         </section>
-        <div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
+        <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
+          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} />}
+        </div>
       </div>
       <footer className="game-hud">
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
         <div className="media-controls"><button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, self?.camera ?? false); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
           <button className={self?.camera ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.camera ? 'Turn camera off' : 'Turn camera on'} aria-pressed={self?.camera ?? false} onClick={() => { void media.chooseMedia(self?.mic ?? false, !self?.camera); }}><Icon name="camera" off={!self?.camera} /><span>{self?.camera ? 'Camera on' : 'Camera off'}</span></button>
+          <button className={`device-button ${media.screenStream ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || isMediaPrompt} aria-label={media.screenStream ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream ? 'Stop sharing' : 'Share screen'}</span></button>
           <span className="hud-divider" /><button className="leave-button" disabled={!connected} onClick={game.leave} aria-label="Leave office"><Icon name="exit" /></button>
         </div>
-        <div className="movement-hint"><span><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>WASD or arrow keys to walk<small>Scroll to zoom</small></span></div>
+        <div className="movement-hint"><span><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>WASD or arrow keys to walk<small>Hold Shift to sprint · Z to dance · Scroll to zoom</small></span></div>
+        <div className="emoji-bar" role="group" aria-label="Emoji reactions">
+          {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
+        </div>
       </footer>
       {(game.error || (media.error && !isMediaPrompt)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
     </main>

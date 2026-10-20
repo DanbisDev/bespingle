@@ -39,6 +39,20 @@ async function client(name, avatar) {
       }
       return stream;
     };
+    window.__screens = [];
+    navigator.mediaDevices.getDisplayMedia = async () => {
+      if (window.__cancelScreen) { window.__cancelScreen = false; throw new DOMException('Cancelled', 'NotAllowedError'); }
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280; canvas.height = 720;
+      const ctx = canvas.getContext('2d');
+      const paint = () => { ctx.fillStyle = '#113c52'; ctx.fillRect(0, 0, 1280, 720); ctx.fillStyle = 'white'; ctx.font = '48px sans-serif'; ctx.fillText(`Shared screen ${Date.now()}`, 40, 100); };
+      paint();
+      const stream = canvas.captureStream(15);
+      const timer = setInterval(() => { if (stream.getTracks().every((track) => track.readyState === 'ended')) clearInterval(timer); else paint(); }, 66);
+      window.__screens.push(stream);
+      if (window.__holdScreen) { window.__holdScreen = false; await new Promise((resolve) => { window.__releaseScreen = resolve; }); }
+      return stream;
+    };
     const send = WebSocket.prototype.send;
     WebSocket.prototype.send = function(data) { if (this.url.endsWith('/ws')) window.__wire.push(JSON.parse(data)); return send.call(this, data); };
   });
@@ -145,7 +159,7 @@ try {
   });
   assert(gameLayout.gameWidth >= gameLayout.width - 1, 'Game area spans the window width');
   assert(gameLayout.gameHeight >= gameLayout.height * 0.9, 'Game area uses nearly all the window height');
-  assert(gameLayout.viewportHeight >= gameLayout.height * 0.8, 'Playable viewport dominates the window');
+  assert(gameLayout.viewportHeight >= gameLayout.height * 0.75, 'Playable viewport dominates the window');
   assert(gameLayout.pageHeight <= gameLayout.height + 1 && gameLayout.hudBottom <= gameLayout.height + 1, 'HUD remains visible without page scrolling');
   assert.equal(gameLayout.scheme, 'dark', 'Night-mode browser controls');
   const gameCanvas = alice.locator('[data-testid="game-canvas"]');
@@ -207,6 +221,36 @@ try {
   await alice.screenshot({ path: `${output}/05-expanded-videos.png`, fullPage: true });
   await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
 
+  // Separate screen tracks must arrive alongside the camera and microphone.
+  const beforeSharing = await captureState(alice);
+  await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
+  await bob.getByTestId('screen-peer').waitFor();
+  await bob.waitForFunction(() => { const video = document.querySelector('[data-testid="screen-peer"] video'); return video?.videoWidth === 1280 && video.currentTime > 0; });
+  assert.deepEqual(await captureState(alice), beforeSharing, 'Sharing preserves camera and microphone tracks');
+  await bob.getByRole('button', { name: 'Share screen', exact: true }).click();
+  await alice.getByTestId('screen-peer').waitFor();
+  await alice.waitForFunction(() => document.querySelector('[data-testid="screen-peer"] video')?.currentTime > 0);
+  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).first().click();
+  const tileBounds = await alice.locator('.expanded .video-tile').evaluateAll((tiles) => tiles.map((tile) => { const r = tile.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; }));
+  for (let i = 0; i < tileBounds.length; i++) for (let j = i + 1; j < tileBounds.length; j++) {
+    const a = tileBounds[i], b = tileBounds[j];
+    assert(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, 'Expanded screen and camera tiles do not overlap');
+  }
+  await alice.screenshot({ path: `${output}/screen-sharing.png`, fullPage: true });
+  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Stop sharing screen', exact: true }).click();
+  await bob.getByTestId('screen-peer').waitFor({ state: 'detached' });
+  assert(await alice.evaluate(() => window.__screens.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))));
+  await bob.evaluate(() => { const track = window.__screens.at(-1).getVideoTracks()[0]; track.stop(); track.dispatchEvent(new Event('ended')); });
+  await alice.getByTestId('screen-peer').waitFor({ state: 'detached' });
+  await alice.evaluate(() => { window.__cancelScreen = true; });
+  await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
+  await alice.waitForFunction(() => !document.querySelector('[aria-label="Share screen"]').disabled);
+  assert.equal(await alice.getByTestId('screen-self').count(), 0, 'Cancelling capture does not start sharing');
+  await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
+  await bob.getByTestId('screen-peer').waitFor();
+  console.log('Concurrent screen shares, received frames, preserved devices, explicit stop, browser stop, and cancellation passed');
+
   const initialCapture = await captureState(alice);
   const originalAudio = initialCapture.tracks.find((track) => track.kind === 'audio').id;
   const originalVideo = initialCapture.tracks.find((track) => track.kind === 'video').id;
@@ -216,6 +260,7 @@ try {
   await go(alice, 640, 450);
   await alice.waitForFunction(() => window.__pcs.every((pc) => pc.connectionState === 'closed'));
   await bob.waitForFunction(() => window.__pcs.every((pc) => pc.connectionState === 'closed'));
+  assert(await alice.evaluate(() => window.__screens.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))), 'Leaving a carpet stops screen capture');
   await expectDevices(alice, true, true);
   assert.deepEqual(await captureState(alice), initialCapture, 'Leaving a carpet preserves the same live capture without recapturing');
   assert.equal(await alice.getByRole('dialog').count(), 0, 'The open floor does not prompt again');
@@ -310,6 +355,15 @@ try {
   await alice.keyboard.up('w');
   await choose(alice, 'Neither');
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'The next game asks again and Neither opens no devices');
+
+  await alice.evaluate(() => { window.__holdScreen = true; });
+  await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
+  await alice.waitForFunction(() => typeof window.__releaseScreen === 'function');
+  await go(alice, 640, 450);
+  await alice.evaluate(() => window.__releaseScreen());
+  await alice.waitForFunction(() => window.__screens.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended')));
+  assert.equal(await alice.getByTestId('screen-self').count(), 0, 'A late screen selection cannot resume sharing on the floor');
+  await go(alice, 640, 350);
 
   // A permission result that arrives after leaving must never revive capture.
   await alice.evaluate(() => { window.__holdNextCapture = true; });

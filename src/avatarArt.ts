@@ -68,10 +68,14 @@ function arm(ctx: Context, p: Palette, x: number, y: number, front: boolean) {
   pixel(ctx, front ? p.skin[2] : p.skin[1], x + 1, y + 5, 1, 2);
 }
 
-function torso(ctx: Context, p: Palette, index: number, side: boolean, back: boolean, seated: boolean, step: number) {
+function torso(ctx: Context, p: Palette, index: number, side: boolean, back: boolean, seated: boolean, step: number, danceFrame = 0) {
   const left = side ? -5 : -7;
   const width = side ? 11 : 14;
-  if (!side) {
+  if (danceFrame) {
+    // Alternate raised hands with a wide, swinging silhouette.
+    arm(ctx, p, -14, danceFrame <= 2 ? -24 : -17, true);
+    arm(ctx, p, 10, danceFrame <= 2 ? -17 : -24, true);
+  } else if (!side) {
     arm(ctx, p, -10, -14 + (seated ? 2 : -step), !back);
     arm(ctx, p, 6, -14 + (seated ? 2 : step), !back);
   } else {
@@ -117,7 +121,7 @@ function torso(ctx: Context, p: Palette, index: number, side: boolean, back: boo
       }
     }
   }
-  if (side) arm(ctx, p, -4 + (seated ? 2 : step), -13 + (seated ? 1 : 0), !back);
+  if (side && !danceFrame) arm(ctx, p, -4 + (seated ? 2 : step), -13 + (seated ? 1 : 0), !back);
 }
 
 function hairCap(ctx: Context, p: Palette, index: number) {
@@ -284,7 +288,7 @@ function sideHead(ctx: Context, p: Palette, index: number) {
   }
 }
 
-function makeSprite(index: number, direction: Direction, seated: boolean, frame: number): HTMLCanvasElement {
+function makeSprite(index: number, direction: Direction, seated: boolean, frame: number, danceFrame: number): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = 80;
   canvas.height = 80;
@@ -294,14 +298,15 @@ function makeSprite(index: number, direction: Direction, seated: boolean, frame:
   const p = palettes[index];
   const side = direction === 'left' || direction === 'right';
   const back = direction === 'up';
-  const step = seated || frame === 0 ? 0 : frame === 1 ? -1 : 1;
+  const step = danceFrame ? (danceFrame <= 2 ? -2 : 2) : seated || frame === 0 ? 0 : frame === 1 ? -1 : 1;
   ctx.fillStyle = '#10152642';
   ctx.beginPath();
   ctx.ellipse(0, -1, 10.5, 4, 0, 0, Math.PI * 2);
   ctx.fill();
+  if (danceFrame) ctx.translate(danceFrame <= 2 ? -1 : 1, danceFrame % 2 ? -2 : 0);
   legs(ctx, p, side, seated, step);
   ctx.translate(0, seated ? 2 : step ? -1 : 0);
-  torso(ctx, p, index, side, back, seated, step);
+  torso(ctx, p, index, side, back, seated, step, danceFrame);
   if (side) sideHead(ctx, p, index);
   else frontHead(ctx, p, index, back);
   return canvas;
@@ -317,14 +322,15 @@ export function drawAvatar(
   seated: boolean,
   frame = 0,
   scale = 1,
+  danceFrame = 0,
 ) {
   const index = ((Math.trunc(avatar) % palettes.length) + palettes.length) % palettes.length;
   const direction: Direction = facing === 'up' || facing === 'left' || facing === 'right' ? facing : 'down';
   const pose = seated || frame === 0 ? 0 : Math.floor(frame) % 2 === 0 ? 2 : 1;
-  const key = `${index}:${direction}:${seated ? 1 : 0}:${pose}`;
+  const key = `${index}:${direction}:${seated ? 1 : 0}:${pose}:${danceFrame}`;
   let sprite = sprites.get(key);
   if (!sprite) {
-    sprite = makeSprite(index, direction, seated, pose);
+    sprite = makeSprite(index, direction, seated, pose, danceFrame);
     sprites.set(key, sprite);
   }
   ctx.save();

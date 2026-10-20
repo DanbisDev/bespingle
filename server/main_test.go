@@ -84,9 +84,122 @@ func drain(c *client) {
 	}
 }
 
-func requestMove(t *testing.T, h *hub, c *client, requestID uint64, x, y float64, facing string) moveResult {
+func TestDance(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	sender := unitClient(t, h, "Dancer")
+	peer := unitClient(t, h, "Observer")
+	drain(sender)
+	drain(peer)
+	toggle := func() {
+		t.Helper()
+		if err := h.handle(sender, []byte(`{"type":"dance"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toggle()
+	for _, c := range []*client{sender, peer} {
+		var state stateMessage
+		if err := json.Unmarshal(<-c.send, &state); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, p := range state.Players {
+			if p.ID == sender.player.ID && p.Dance != nil && p.Dance.StartedAt == clock.now().UnixMilli() {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("dance must reach dancer and observer")
+		}
+	}
+	toggle()
+	if snapshot(h, sender).Dance != nil {
+		t.Fatal("second press must stop dancing")
+	}
+	toggle()
+	p := snapshot(h, sender)
+	result := requestMove(t, h, sender, 1, p.X, p.Y-48, "up")
+	if !result.Accepted || snapshot(h, sender).Dance != nil {
+		t.Fatal("walking must stop dancing")
+	}
+	toggle()
+	if snapshot(h, sender).Dance != nil {
+		t.Fatal("cannot start dancing mid-step")
+	}
+	for _, message := range []string{`{"type":"dance","from":"spoofed"}`, `{"type":"dance","startedAt":1}`} {
+		if err := h.handle(sender, []byte(message)); err == nil {
+			t.Fatal("accepted invalid dance message")
+		}
+	}
+	if err := h.handle(&client{}, []byte(`{"type":"dance"}`)); err == nil {
+		t.Fatal("dance requires joining")
+	}
+}
+
+func TestEmojiReactions(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	sender := unitClient(t, h, "Sender")
+	peer := unitClient(t, h, "Observer")
+	drain(sender)
+	drain(peer)
+	if err := h.handle(sender, []byte(`{"type":"reaction","emoji":"👋"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*client{sender, peer} {
+		select {
+		case data := <-c.send:
+			var state stateMessage
+			if err := json.Unmarshal(data, &state); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, p := range state.Players {
+				if p.ID == sender.player.ID && p.Reaction != nil {
+					found = p.Reaction.Emoji == "👋" && p.Reaction.StartedAt == clock.now().UnixMilli() && p.Reaction.DurationMs == 3000
+				}
+			}
+			if !found {
+				t.Fatal("reaction must reach sender and observers on the open floor")
+			}
+		default:
+			t.Fatal("missing reaction broadcast")
+		}
+	}
+	for _, message := range []string{`{"type":"reaction","emoji":"hello"}`, `{"type":"reaction","emoji":""}`, `{"type":"reaction","emoji":"👍","from":"spoofed"}`} {
+		if err := h.handle(sender, []byte(message)); err == nil {
+			t.Fatalf("accepted invalid reaction: %s", message)
+		}
+	}
+	if err := h.handle(sender, []byte(`{"type":"reaction","emoji":"👍"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot(h, sender).Reaction.Emoji != "👋" {
+		t.Fatal("rapid reactions should be throttled")
+	}
+	advance(h, clock, 250*time.Millisecond)
+	if err := h.handle(sender, []byte(`{"type":"reaction","emoji":"👍"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot(h, sender).Reaction.Emoji != "👍" {
+		t.Fatal("a new reaction should replace the previous bubble")
+	}
+	advance(h, clock, 3*time.Second)
+	h.mu.Lock()
+	players := h.playersLocked()
+	h.mu.Unlock()
+	for _, p := range players {
+		if p.Reaction != nil {
+			t.Fatal("expired reactions must not appear in later snapshots")
+		}
+	}
+	if err := h.handle(&client{}, []byte(`{"type":"reaction","emoji":"👋"}`)); err == nil {
+		t.Fatal("reactions require joining the office")
+	}
+}
+
+func requestMove(t *testing.T, h *hub, c *client, requestID uint64, x, y float64, facing string, sprint ...bool) moveResult {
 	t.Helper()
-	if err := h.handle(c, marshal(map[string]any{"type": "move", "requestId": requestID, "x": x, "y": y, "facing": facing})); err != nil {
+	if err := h.handle(c, marshal(map[string]any{"type": "move", "requestId": requestID, "x": x, "y": y, "facing": facing, "sprint": len(sprint) > 0 && sprint[0]})); err != nil {
 		t.Fatal(err)
 	}
 	for {
@@ -248,6 +361,105 @@ func TestGridStepStaysAtSourceUntilArrival(t *testing.T) {
 	}
 	if err := h.handle(c, []byte(`{"type":"move","requestId":0,"x":72,"y":264,"facing":"up"}`)); err == nil {
 		t.Fatal("missing positive request ID accepted")
+	}
+}
+
+func TestSprintTravelsThreeTilesInOneTick(t *testing.T) {
+	for _, tc := range []struct {
+		facing string
+		dx, dy float64
+	}{{"up", 0, -48}, {"down", 0, 48}, {"left", -48, 0}, {"right", 48, 0}} {
+		t.Run(tc.facing, func(t *testing.T) {
+			w := testWorld()
+			w.Spawn = point{X: 216, Y: 216}
+			h, clock := testHub(t, w)
+			c := unitClient(t, h, "Runner")
+			if result := requestMove(t, h, c, 1, 216+tc.dx, 216+tc.dy, tc.facing, true); !result.Accepted {
+				t.Fatal(result)
+			}
+			p := snapshot(h, c)
+			if p.Move == nil || p.Move.ToX != 216+3*tc.dx || p.Move.ToY != 216+3*tc.dy || p.Move.DurationMs != 240 {
+				t.Fatalf("incorrect sprint stride: %+v", p.Move)
+			}
+			if result := requestMove(t, h, c, 2, 216+tc.dx, 216+tc.dy, tc.facing, true); result.Reason != "busy" {
+				t.Fatal("sprint bypassed tick duration")
+			}
+			advance(h, clock, 239*time.Millisecond)
+			if snapshot(h, c).Move == nil {
+				t.Fatal("sprint settled before the tick ended")
+			}
+			advance(h, clock, time.Millisecond)
+			p = snapshot(h, c)
+			if p.Move != nil || p.X != 216+3*tc.dx || p.Y != 216+3*tc.dy {
+				t.Fatalf("incorrect sprint landing: %+v", p)
+			}
+			// Releasing sprint restores the existing single-tile stride.
+			if result := requestMove(t, h, c, 3, p.X-tc.dx, p.Y-tc.dy, map[string]string{"up": "down", "down": "up", "left": "right", "right": "left"}[tc.facing]); !result.Accepted {
+				t.Fatal(result)
+			}
+			p = snapshot(h, c)
+			if math.Abs(p.Move.ToX-p.X)+math.Abs(p.Move.ToY-p.Y) != 48 {
+				t.Fatal("walking retained sprint distance")
+			}
+		})
+	}
+}
+
+func TestSprintStopsBeforeObstacles(t *testing.T) {
+	for _, obstacle := range []string{"wall", "player", "boundary"} {
+		t.Run(obstacle, func(t *testing.T) {
+			w := testWorld()
+			w.Spawn = point{X: 216, Y: 216}
+			if obstacle == "wall" {
+				// The third tile is beyond this thin wall, so endpoint-only
+				// collision detection would incorrectly allow the stride.
+				w.Walls = []rect{{X: 285, Y: 144, W: 2, H: 144}}
+			}
+			if obstacle == "boundary" {
+				w.Width = 300
+			}
+			h, _ := testHub(t, w)
+			c := unitClient(t, h, "Runner")
+			if obstacle == "player" {
+				other := unitClient(t, h, "Blocker")
+				h.mu.Lock()
+				other.player.X, other.player.Y = 312, 216
+				h.mu.Unlock()
+			}
+			if result := requestMove(t, h, c, 1, 264, 216, "right", true); !result.Accepted {
+				t.Fatal(result)
+			}
+			if m := snapshot(h, c).Move; m == nil || m.ToX != 264 || m.ToY != 216 {
+				t.Fatalf("sprint did not stop before %s: %+v", obstacle, m)
+			}
+		})
+	}
+}
+
+func TestSprintReservesIntermediateTiles(t *testing.T) {
+	w := testWorld()
+	w.Spawn = point{X: 216, Y: 216}
+	h, clock := testHub(t, w)
+	a, b := unitClient(t, h, "Runner"), unitClient(t, h, "Crosser")
+	h.mu.Lock()
+	b.player.X, b.player.Y = 264, 264
+	h.mu.Unlock()
+	if result := requestMove(t, h, a, 1, 264, 216, "right", true); !result.Accepted {
+		t.Fatal(result)
+	}
+	if result := requestMove(t, h, b, 1, 264, 216, "up", true); result.Accepted || result.Reason != "occupied" {
+		t.Fatalf("intermediate sprint tile was not reserved: %+v", result)
+	}
+	h.mu.Lock()
+	for _, x := range []float64{216, 264, 312, 360} {
+		if !h.occupiedLocked(point{X: x, Y: 216}, b) {
+			t.Errorf("sprint path tile %v was not reserved", x)
+		}
+	}
+	h.mu.Unlock()
+	advance(h, clock, 240*time.Millisecond)
+	if result := requestMove(t, h, b, 2, 264, 216, "up"); !result.Accepted {
+		t.Fatal("intermediate sprint tile remained reserved after arrival")
 	}
 }
 
@@ -775,4 +987,123 @@ func TestRailwayWebSocketOriginIsExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn.Close()
+}
+
+func chatMessages(c *client) []map[string]any {
+	var messages []map[string]any
+	for {
+		select {
+		case data := <-c.send:
+			var msg map[string]any
+			_ = json.Unmarshal(data, &msg)
+			if msg["type"] == "chat" {
+				messages = append(messages, msg)
+			}
+		default:
+			return messages
+		}
+	}
+}
+
+func TestCarpetChatLiveDelivery(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	alice := unitClient(t, h, "Alice")
+	walkTo(t, h, clock, alice, 120, 168)
+	bob := unitClient(t, h, "Bob")
+	walkTo(t, h, clock, bob, 168, 168)
+	other := unitClient(t, h, "Other carpet")
+	walkTo(t, h, clock, other, 408, 168)
+	floor := unitClient(t, h, "Open floor")
+	for _, c := range []*client{alice, bob, other, floor} {
+		drain(c)
+	}
+	sendChat := func(c *client, carpetID, text string) error {
+		return h.handle(c, marshal(map[string]any{"type": "chat", "carpetId": carpetID, "text": text}))
+	}
+	if err := sendChat(alice, "a", " hello 👋 "); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*client{alice, bob} {
+		messages := chatMessages(c)
+		if len(messages) != 1 || messages[0]["text"] != "hello 👋" || messages[0]["from"] != alice.player.ID || messages[0]["name"] != "Alice" || messages[0]["carpetId"] != "a" {
+			t.Fatalf("wrong chat delivery: %v", messages)
+		}
+	}
+	for _, c := range []*client{other, floor} {
+		if len(chatMessages(c)) != 0 {
+			t.Fatal("message leaked outside the carpet")
+		}
+	}
+	late := unitClient(t, h, "Late arrival")
+	walkTo(t, h, clock, late, 216, 168)
+	if len(chatMessages(late)) != 0 {
+		t.Fatal("late arrival received history")
+	}
+	walkTo(t, h, clock, bob, 168, 312)
+	if err := sendChat(bob, "a", "stale send"); err == nil {
+		t.Fatal("send after leaving should fail")
+	}
+	if err := sendChat(alice, "a", "after Bob left"); err != nil {
+		t.Fatal(err)
+	}
+	if len(chatMessages(bob)) != 0 || len(chatMessages(late)) != 1 {
+		t.Fatal("delivery did not follow current carpet membership")
+	}
+}
+
+func TestCarpetChatValidation(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	c := unitClient(t, h, "Alice")
+	walkTo(t, h, clock, c, 120, 168)
+	for _, msg := range []map[string]any{
+		{"type": "chat", "carpetId": "b", "text": "wrong carpet"},
+		{"type": "chat", "text": "missing carpet"},
+		{"type": "chat", "carpetId": "a", "text": "  "},
+		{"type": "chat", "carpetId": "a", "text": strings.Repeat("x", 1001)},
+		{"type": "chat", "carpetId": "a", "text": "bad\x00text"},
+		{"type": "chat", "carpetId": "a", "text": "hello", "from": "spoofed"},
+	} {
+		if err := h.handle(c, marshal(msg)); err == nil {
+			t.Errorf("accepted invalid chat: %v", msg)
+		}
+	}
+	if err := h.handle(c, marshal(map[string]any{"type": "chat", "carpetId": "a", "text": strings.Repeat("👋", 1000)})); err != nil {
+		t.Fatalf("valid Unicode message rejected: %v", err)
+	}
+}
+
+func TestScreenSharingMembershipAndSignaling(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	c := unitClient(t, h, "Presenter")
+	status := []byte(`{"type":"media","mic":true,"camera":true,"screen":true}`)
+	if err := h.handle(c, status); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot(h, c).Screen {
+		t.Fatal("screen sharing cannot be advertised on the open floor")
+	}
+	walkTo(t, h, clock, c, 120, 216)
+	if err := h.handle(c, status); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot(h, c).Screen {
+		t.Fatal("screen sharing status missing on carpet")
+	}
+	walkTo(t, h, clock, c, 168, 216)
+	if !snapshot(h, c).Screen {
+		t.Fatal("movement within a carpet stopped sharing")
+	}
+	walkTo(t, h, clock, c, 312, 216)
+	if p := snapshot(h, c); p.Screen || !p.Mic || !p.Camera {
+		t.Fatal("leaving carpet must clear screen sharing and preserve devices")
+	}
+	sdp := "v=0\r\n" + strings.Repeat("m=video 9 UDP/TLS/RTP/SAVPF 96\r\n", 2) + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+	msg := signalMessage{Type: "signal", To: strings.Repeat("a", 32), SessionID: "screen", Description: &description{Type: "offer", SDP: sdp}}
+	if err := validateSignal(msg); err != nil {
+		t.Fatalf("camera, screen, and audio offer rejected: %v", err)
+	}
+	msg.Description.SDP += "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+	if err := validateSignal(msg); err == nil {
+		t.Fatal("more than three media sections accepted")
+	}
 }

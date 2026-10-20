@@ -53,6 +53,8 @@ export interface World {
 }
 
 export interface Player {
+  dance?: { startedAt: number };
+  reaction?: { emoji: string; startedAt: number; durationMs: number };
   id: string;
   name: string;
   avatar: number;
@@ -63,6 +65,7 @@ export interface Player {
   carpetId: string;
   mic: boolean;
   camera: boolean;
+  screen?: boolean;
   move?: Move;
 }
 

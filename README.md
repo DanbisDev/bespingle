@@ -31,10 +31,13 @@ To start them separately, run `npm run dev:backend` and
 - Choose a display name and one of six pixel avatars. Click your profile to
   change your name later.
 - Move with **WASD or the arrow keys**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
+  Hold **Shift** while moving to sprint up to **3 tiles per tick** (240 ms),
+  stopping before walls or occupied tiles. Releasing Shift returns to walking.
   The hidden grid reserves both the source and destination during a step, so
   players cannot share tiles or swap through one another. A blocked move into
   another player makes the moving avatar bounce back. Walls block movement;
   furniture does not.
+- Press **Z** to toggle dancing for everyone to see. Walking stops the dance.
 - **Scroll over the game area** to zoom. The camera follows your avatar.
 - Share a carpet to talk. The Nook, The Studio, and The Commons have 2, 4, and 8
   visual chairs, with no attendance caps. Walking onto a chair tile seats your
@@ -46,11 +49,22 @@ To start them separately, run `npm run dev:backend` and
   for that game session; entering another carpet does not prompt again.
 - Click the video strip or **Expand** to cover the game area with videos.
   Movement pauses while videos are expanded.
+- Each carpet has a temporary text chat. Messages go only to participants
+  connected to that carpet when sent, including the sender. Later arrivals get
+  no earlier messages. The server relays messages without saving or logging
+  their content; each browser keeps at most 100 messages in memory, cleared
+  when leaving the carpet, disconnecting, or reloading. Chat is not written to
+  browser storage. Recipients can still copy messages they receive.
+- Click **Share screen** on a carpet to choose a tab, window, or display. Everyone
+  on that carpet can watch alongside your camera; use **Expand** for a larger view.
+  Stop with **Stop sharing** or the browser’s sharing control. Leaving the carpet
+  or office also stops sharing, including a pending screen selection. Multiple
+  people can share at once. Screen sharing sends video only, without system audio.
 - **Leave office** stops local devices. A new game starts with devices off.
 
 ## Direct audio and video
 
-The Go server handles names, positions, carpet membership, device flags, and
+The Go server handles names, positions, carpet membership, device flags, temporary carpet chat, and
 WebRTC connection setup over WebSocket. It does not receive or forward audio or
 video. Browsers send media directly to other participants on the same carpet.
 Leaving a carpet closes those peer connections. Local devices may remain on,
@@ -124,6 +138,7 @@ With the local development stack running in another terminal:
 npx playwright install chromium
 npm run test:grid
 npm run test:browser
+npm run test:chat
 ```
 
 Alternatively, use an existing Chrome installation:
@@ -131,11 +146,13 @@ Alternatively, use an existing Chrome installation:
 ```sh
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:grid
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:browser
+CHROME_PATH=/absolute/path/to/google-chrome npm run test:chat
 ```
 
 The browser checks use synthetic microphones and cameras. They cover grid
 movement and collisions, carpet membership, game-area sizing, zoom, media
-connections, device reuse, and device shutdown. Screenshots go to the ignored
+connections, device reuse, device shutdown, and temporary carpet chat delivery
+and clearing. Screenshots go to the ignored
 `test-results/browser/` directory. Backend checks include race detection,
 movement reservations, signaling isolation, and invalid messages and origins.
 

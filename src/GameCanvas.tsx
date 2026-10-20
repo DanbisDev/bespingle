@@ -7,6 +7,7 @@ interface GameCanvasProps {
   players: Player[];
   selfId: string;
   onMove: Move;
+  onDance: () => void;
   serverNow: () => number;
   disabled?: boolean;
 }
@@ -21,8 +22,8 @@ const directions: Record<string, Direction> = {
   ArrowUp: 'up', ArrowLeft: 'left', ArrowDown: 'down', ArrowRight: 'right',
 };
 const vectors: Record<Direction, readonly [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-// Tall sprites and their labels may extend above the walkable world.
-const cameraHeadroom = 32;
+// Leave room for floating reactions above avatars at the top edge of the world.
+const cameraHeadroom = 140;
 const bounceDuration = 190;
 
 function typingInto(target: EventTarget | null): boolean {
@@ -66,12 +67,46 @@ function nameplate(ctx: CanvasRenderingContext2D, player: Player, x: number, y: 
   }
 }
 
-export function GameCanvas({ players, selfId, onMove, serverNow, disabled = false }: GameCanvasProps) {
+function reactionBubble(ctx: CanvasRenderingContext2D, player: Player, x: number, y: number, now: number) {
+  const reaction = player.reaction;
+  if (!reaction) return;
+  const age = now - reaction.startedAt;
+  if (age < 0 || age >= reaction.durationMs) return;
+  const progress = age / reaction.durationMs;
+  const center = Math.max(28, Math.min(world.width - 28, x));
+  const top = y - 138 - progress * 18;
+  const scale = Math.min(1, age / 140) * (1 + Math.sin(Math.min(1, age / 280) * Math.PI) * .12);
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, (reaction.durationMs - age) / 500);
+  ctx.translate(center, top + 23);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = '#fff7e9';
+  ctx.strokeStyle = '#66776c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-25, -23, 50, 46, 12);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-5, 22);
+  ctx.lineTo(0, 29);
+  ctx.lineTo(6, 22);
+  ctx.fill();
+  ctx.stroke();
+  ctx.font = '28px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(reaction.emoji, 0, 1);
+  ctx.restore();
+}
+
+export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabled = false }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const playersRef = useRef(players);
   const selfIdRef = useRef(selfId);
   const onMoveRef = useRef(onMove);
+  const onDanceRef = useRef(onDance);
   const serverNowRef = useRef(serverNow);
   const disabledRef = useRef(disabled);
   const keysRef = useRef(new Set<string>());
@@ -84,6 +119,7 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
   playersRef.current = players;
   selfIdRef.current = selfId;
   onMoveRef.current = onMove;
+  onDanceRef.current = onDance;
   serverNowRef.current = serverNow;
   disabledRef.current = disabled;
 
@@ -160,6 +196,16 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
     }
 
     function onKeyDown(event: KeyboardEvent) {
+      if ((event.code === 'ShiftLeft' || event.code === 'ShiftRight') && !disabledRef.current && !typingInto(event.target)) {
+        keysRef.current.add(event.code);
+        return;
+      }
+      if (event.code === 'KeyZ' && !disabledRef.current && !typingInto(event.target) && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        if (!event.repeat && !keysRef.current.has(event.code)) onDanceRef.current();
+        keysRef.current.add(event.code);
+        return;
+      }
       const direction = directions[event.code];
       if (!direction || disabledRef.current || typingInto(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
       event.preventDefault();
@@ -170,7 +216,7 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
     }
 
     function onKeyUp(event: KeyboardEvent) {
-      if (directions[event.code]) keysRef.current.delete(event.code);
+      keysRef.current.delete(event.code);
     }
 
     function onVisibilityChange() {
@@ -186,7 +232,7 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
       pendingRef.current = pending;
       ownFacingRef.current = direction;
       // Animate only an accepted step. Two simultaneous claims cannot visually pass through each other.
-      void onMoveRef.current(pending.toX, pending.toY, direction).then((result) => {
+      void onMoveRef.current(pending.toX, pending.toY, direction, keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight')).then((result) => {
         if (!active || pendingRef.current !== pending || selfIdRef.current !== pending.id) return;
         if (!result.accepted) {
           pendingRef.current = null;
@@ -206,7 +252,7 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
       if (pending && self && (self.move || self.x !== pending.fromX || self.y !== pending.fromY)) pendingRef.current = null;
       if (bounceRef.current && (bounceRef.current.id !== self?.id || now - bounceRef.current.startedAt >= bounceDuration)) bounceRef.current = null;
       if (self && !disabledRef.current && !self.move && !pendingRef.current && !bounceRef.current) {
-        const heldKeys = [...keysRef.current];
+        const heldKeys = [...keysRef.current].filter((key) => directions[key]);
         const held = heldKeys.length ? directions[heldKeys[heldKeys.length - 1]] : null;
         const direction = queuedDirectionRef.current ?? held;
         if (direction) {
@@ -239,6 +285,7 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
       canvas.dataset.bounceCount = String(bounceCountRef.current);
       canvas.dataset.bouncing = String(Boolean(bounceRef.current));
       canvas.dataset.moving = String(Boolean(self?.move));
+      canvas.dataset.dancing = String(Boolean(self?.dance));
 
       if (self) {
         canvas.dataset.x = String(self.x);
@@ -287,15 +334,20 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
         const isSelf = player.id === selfIdRef.current;
         const walking = Boolean(player.move);
         const seat = !walking ? findChair(player.x, player.y) : undefined;
-        const seated = !walking && player.seated && Boolean(seat);
+        const dancing = !walking && Boolean(player.dance);
+        const seated = !walking && !dancing && player.seated && Boolean(seat);
         if (isSelf) {
           ctx.fillStyle = '#ddedb844';
           ctx.fillRect(Math.round(position.x - 12), Math.round(position.y - 3), 24, 5);
           ctx.fillStyle = '#d3e5a9';
           ctx.fillRect(Math.round(position.x - 8), Math.round(position.y + 2), 16, 2);
         }
-        drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? Math.floor(now / 120) % 2 + 1 : 0);
+        drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? Math.floor(now / 120) % 2 + 1 : 0, 1, dancing ? Math.floor(Math.max(0, time - player.dance!.startedAt) / 160) % 4 + 1 : 0);
         nameplate(ctx, player, position.x, position.y, isSelf);
+      }
+      // Draw bubbles last so nearby avatars cannot obscure them.
+      for (const { player, position } of positioned) {
+        reactionBubble(ctx, player, position.x, position.y, time);
       }
       ctx.restore();
       animation = requestAnimationFrame(render);
@@ -323,11 +375,11 @@ export function GameCanvas({ players, selfId, onMove, serverNow, disabled = fals
   return (
     <div ref={viewportRef} className="game-world" data-testid="game-world" style={{ position: 'absolute', inset: 0, minHeight: 0, overflow: 'hidden' }}>
       <canvas ref={canvasRef} tabIndex={0} role="img"
-        aria-label="Game area. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
+        aria-label="Game area. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Hold Shift to sprint up to three tiles per tick. Press Z to dance or stop dancing; walking stops dancing. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
         data-testid="game-canvas" data-player-count={players.length}
         onPointerDown={(event) => event.currentTarget.focus({ preventScroll: true })}
         style={{ display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated', outline: 'none' }}>
-        An interactive game area with three conversation carpets. Use W A S D or arrow keys to move by tiles and scroll to zoom.
+        An interactive game area with three conversation carpets. Use W A S D or arrow keys to move by tiles, hold Shift to sprint, press Z to dance, and scroll to zoom.
       </canvas>
     </div>
   );

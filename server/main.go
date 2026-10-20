@@ -182,7 +182,19 @@ type movement struct {
 	DurationMs int64   `json:"durationMs"`
 }
 
+type reaction struct {
+	Emoji      string `json:"emoji"`
+	StartedAt  int64  `json:"startedAt"`
+	DurationMs int64  `json:"durationMs"`
+}
+
+type dance struct {
+	StartedAt int64 `json:"startedAt"`
+}
+
 type player struct {
+	Dance    *dance    `json:"dance,omitempty"`
+	Reaction *reaction `json:"reaction,omitempty"`
 	Move     *movement `json:"move,omitempty"`
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
@@ -194,6 +206,7 @@ type player struct {
 	CarpetID string    `json:"carpetId"`
 	Mic      bool      `json:"mic"`
 	Camera   bool      `json:"camera"`
+	Screen   bool      `json:"screen"`
 }
 
 type description struct {
@@ -324,6 +337,9 @@ func (h *hub) enqueueLocked(c *client, data []byte) bool {
 func (h *hub) playersLocked() []player {
 	players := make([]player, 0, len(h.clients))
 	for _, c := range h.clients {
+		if r := c.player.Reaction; r != nil && h.now().UnixMilli() >= r.StartedAt+r.DurationMs {
+			c.player.Reaction = nil
+		}
 		players = append(players, c.player)
 	}
 	sort.Slice(players, func(i, j int) bool { return players[i].ID < players[j].ID })
@@ -346,7 +362,7 @@ func (h *hub) broadcastLocked() {
 	}
 }
 
-// Current tiles and in-flight destinations are both exclusive. Keeping the
+// Current tiles and every tile on an in-flight path are exclusive. Keeping the
 // source occupied until arrival also prevents swaps and followers walking
 // through an avatar while it is still crossing the edge of its old tile.
 func (h *hub) occupiedLocked(position point, except *client) bool {
@@ -357,8 +373,13 @@ func (h *hub) occupiedLocked(position point, except *client) bool {
 		if (point{X: c.player.X, Y: c.player.Y}) == position {
 			return true
 		}
-		if m := c.player.Move; m != nil && (point{X: m.ToX, Y: m.ToY}) == position {
-			return true
+		if m := c.player.Move; m != nil {
+			// Moves are axis aligned. Reserve intermediate sprint tiles too so
+			// another player cannot enter or cross the path before arrival.
+			if c.player.X == m.ToX && position.X == c.player.X && position.Y >= math.Min(c.player.Y, m.ToY) && position.Y <= math.Max(c.player.Y, m.ToY) ||
+				c.player.Y == m.ToY && position.Y == c.player.Y && position.X >= math.Min(c.player.X, m.ToX) && position.X <= math.Max(c.player.X, m.ToX) {
+				return true
+			}
 		}
 	}
 	return false
@@ -372,7 +393,11 @@ func (h *hub) settleMovesLocked(now time.Time) bool {
 			continue
 		}
 		c.player.X, c.player.Y = m.ToX, m.ToY
+		previousCarpet := c.player.CarpetID
 		c.player.CarpetID = h.world.carpetAt(m.ToX, m.ToY)
+		if previousCarpet != c.player.CarpetID {
+			c.player.Screen = false
+		}
 		c.player.Seated = h.world.isSeated(m.ToX, m.ToY)
 		c.player.Move = nil
 		changed = true
@@ -526,6 +551,7 @@ func (h *hub) handle(c *client, data []byte) error {
 			X         *float64 `json:"x"`
 			Y         *float64 `json:"y"`
 			Facing    string   `json:"facing"`
+			Sprint    bool     `json:"sprint"`
 		}
 		if err := strictDecode(data, &msg); err != nil || msg.RequestID == 0 || msg.RequestID > 9007199254740991 || msg.X == nil || msg.Y == nil {
 			return errors.New("invalid movement message")
@@ -548,21 +574,105 @@ func (h *hub) handle(c *client, data []byte) error {
 			h.moveResultLocked(c, msg.RequestID, false, "occupied")
 			return nil
 		}
+		if msg.Sprint {
+			// Clients still request an adjacent tile. Only the server extends
+			// the stride, checking each tile and stopping before an obstacle.
+			dx, dy := to.X-from.X, to.Y-from.Y
+			for tiles := 1; tiles < 3; tiles++ {
+				next := point{X: to.X + dx, Y: to.Y + dy}
+				if !h.world.canMove(to, next) || h.occupiedLocked(next, c) {
+					break
+				}
+				to = next
+			}
+		}
+		c.player.Dance = nil
 		c.player.Facing = msg.Facing
 		c.player.Move = &movement{ToX: to.X, ToY: to.Y, StartedAt: h.now().UnixMilli(), DurationMs: h.world.Grid.StepDurationMs}
 		h.moveResultLocked(c, msg.RequestID, true, "")
+		h.broadcastLocked()
+	case "dance":
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if err := strictDecode(data, &msg); err != nil {
+			return errors.New("invalid dance message")
+		}
+		if c.player.Move != nil {
+			return nil
+		}
+		if c.player.Dance == nil {
+			c.player.Dance = &dance{StartedAt: h.now().UnixMilli()}
+		} else {
+			c.player.Dance = nil
+		}
+		h.broadcastLocked()
+	case "reaction":
+		var msg struct {
+			Type  string `json:"type"`
+			Emoji string `json:"emoji"`
+		}
+		if err := strictDecode(data, &msg); err != nil {
+			return errors.New("invalid reaction message")
+		}
+		switch msg.Emoji {
+		case "👋", "👍", "❤️", "😂", "🎉", "🤔":
+		default:
+			return errors.New("choose an emoji from the reaction bar")
+		}
+		now := h.now().UnixMilli()
+		if r := c.player.Reaction; r != nil && now-r.StartedAt < 250 {
+			return nil
+		}
+		c.player.Reaction = &reaction{Emoji: msg.Emoji, StartedAt: now, DurationMs: 3000}
 		h.broadcastLocked()
 	case "media":
 		var msg struct {
 			Type   string `json:"type"`
 			Mic    *bool  `json:"mic"`
 			Camera *bool  `json:"camera"`
+			Screen bool   `json:"screen"`
 		}
 		if err := strictDecode(data, &msg); err != nil || msg.Mic == nil || msg.Camera == nil {
 			return errors.New("invalid media status message")
 		}
 		c.player.Mic, c.player.Camera = *msg.Mic, *msg.Camera
+		c.player.Screen = msg.Screen && c.player.CarpetID != ""
 		h.broadcastLocked()
+	case "chat":
+		var msg struct {
+			Type     string `json:"type"`
+			CarpetID string `json:"carpetId"`
+			Text     string `json:"text"`
+		}
+		if err := strictDecode(data, &msg); err != nil {
+			return errors.New("invalid chat message")
+		}
+		msg.Text = strings.TrimSpace(msg.Text)
+		if !utf8.ValidString(msg.Text) || msg.Text == "" || utf8.RuneCountInString(msg.Text) > 1000 || strings.IndexFunc(msg.Text, unicode.IsControl) >= 0 {
+			return errors.New("chat messages must contain 1–1000 characters without control characters")
+		}
+		if c.player.CarpetID == "" || msg.CarpetID != c.player.CarpetID {
+			return errors.New("join this carpet before sending chat messages")
+		}
+		// Fan out once to current members, including the sender. No history is
+		// retained or included in state/welcome messages for later arrivals.
+		out := marshal(struct {
+			Type     string `json:"type"`
+			CarpetID string `json:"carpetId"`
+			From     string `json:"from"`
+			Name     string `json:"name"`
+			Text     string `json:"text"`
+		}{"chat", c.player.CarpetID, c.player.ID, c.player.Name, msg.Text})
+		dropped := false
+		for _, peer := range h.clients {
+			if peer.player.CarpetID == c.player.CarpetID && !h.enqueueLocked(peer, out) {
+				dropped = true
+			}
+		}
+		if dropped {
+			h.broadcastLocked()
+		}
 	case "signal":
 		var msg signalMessage
 		if err := strictDecode(data, &msg); err != nil {
@@ -609,7 +719,7 @@ func validateSignal(msg signalMessage) error {
 				mediaLines++
 			}
 		}
-		if mediaLines == 0 || mediaLines > 2 {
+		if mediaLines == 0 || mediaLines > 3 {
 			return errors.New("SDP must describe audio or video")
 		}
 	}

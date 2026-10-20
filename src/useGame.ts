@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Player } from './world';
-import type { ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
+import type { ChatMessage, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
 
 type PendingMove = { resolve: (result: MoveResult) => void; timer: ReturnType<typeof setTimeout> };
 
 export function useGame() {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const currentCarpet = useRef('');
+  const currentSelf = useRef('');
   const [players, setPlayers] = useState<Player[]>([]);
   const [selfId, setSelfId] = useState('');
   const [status, setStatus] = useState<'offline' | 'connecting' | 'connected' | 'lost'>('offline');
@@ -38,7 +41,7 @@ export function useGame() {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(message));
   }, []);
 
-  const move: Move = useCallback((x, y, facing) => new Promise<MoveResult>((resolve) => {
+  const move: Move = useCallback((x, y, facing, sprint = false) => new Promise<MoveResult>((resolve) => {
     const ws = socket.current;
     const requestId = ++nextMoveId.current;
     if (ws?.readyState !== WebSocket.OPEN) {
@@ -50,13 +53,15 @@ export function useGame() {
       resolve({ type: 'move-result', requestId, accepted: false, reason: 'timeout' });
     }, 3000);
     pendingMoves.current.set(requestId, { resolve, timer });
-    ws.send(JSON.stringify({ type: 'move', requestId, x, y, facing }));
+    ws.send(JSON.stringify({ type: 'move', requestId, x, y, facing, sprint }));
   }), []);
 
   const leave = useCallback(() => {
     const current = socket.current;
     socket.current = null;
     pendingSignals.current = [];
+    currentCarpet.current = currentSelf.current = '';
+    setMessages([]);
     clearMoves();
     current?.close();
     setPlayers([]);
@@ -68,6 +73,8 @@ export function useGame() {
   const join = useCallback((name: string, avatar: number) => {
     socket.current?.close();
     pendingSignals.current = [];
+    currentCarpet.current = currentSelf.current = '';
+    setMessages([]);
     clearMoves();
     clockOffset.current = Date.now() - performance.now();
     clockReady.current = false;
@@ -90,10 +97,18 @@ export function useGame() {
           clockOffset.current = clockReady.current ? Math.max(clockOffset.current, sample) : sample;
           clockReady.current = true;
         }
+        if (message.type === 'welcome') currentSelf.current = message.selfId;
+        const carpetId = message.players.find((player) => player.id === currentSelf.current)?.carpetId ?? '';
+        if (carpetId !== currentCarpet.current) setMessages([]);
+        currentCarpet.current = carpetId;
         setPlayers(message.players);
         if (message.type === 'welcome') {
           setSelfId(message.selfId);
           setStatus('connected');
+        }
+      } else if (message.type === 'chat') {
+        if (currentCarpet.current && message.carpetId === currentCarpet.current) {
+          setMessages((current) => [...current.slice(-99), message]);
         }
       } else if (message.type === 'move-result') {
         const pending = pendingMoves.current.get(message.requestId);
@@ -113,6 +128,8 @@ export function useGame() {
       if (socket.current !== ws) return;
       socket.current = null;
       pendingSignals.current = [];
+      currentCarpet.current = currentSelf.current = '';
+      setMessages([]);
       clearMoves();
       setStatus('lost');
       setPlayers([]);
@@ -129,5 +146,5 @@ export function useGame() {
     clearMoves();
   }, [clearMoves]);
 
-  return { players, selfId, status, error, join, leave, send, move, serverNow, signalHandler };
+  return { messages, players, selfId, status, error, join, leave, send, move, serverNow, signalHandler };
 }

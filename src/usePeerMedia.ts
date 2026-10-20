@@ -4,12 +4,13 @@ import type { Player } from './world';
 import type { Send, Signal } from './protocol';
 
 type PeerStatus = 'connecting' | 'connected' | 'disconnected' | 'failed';
-export type RemoteMedia = { stream: MediaStream; status: PeerStatus };
+export type RemoteMedia = { stream: MediaStream; screenStream: MediaStream; status: PeerStatus };
 type Peer = {
   id: string;
   sessionId: string;
   pc: RTCPeerConnection;
   stream: MediaStream;
+  screenStream: MediaStream;
   candidates: RTCIceCandidateInit[];
   queue: Promise<void>;
 };
@@ -27,6 +28,10 @@ export function usePeerMedia(
 ) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteMedia, setRemoteMedia] = useState<Record<string, RemoteMedia>>({});
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [screenBusy, setScreenBusy] = useState(false);
+  const screen = useRef<MediaStream | null>(null);
+  const screenRequest = useRef(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [hasChosenDevices, setHasChosenDevices] = useState(false);
@@ -53,6 +58,7 @@ export function usePeerMedia(
     peer.pc.onconnectionstatechange = null;
     peer.pc.onicecandidate = null;
     peer.pc.close();
+    peer.screenStream.getTracks().forEach((track) => track.stop());
     peer.stream.getTracks().forEach((track) => track.stop());
     setRemoteMedia((current) => {
       if (!current[id]) return current;
@@ -65,38 +71,43 @@ export function usePeerMedia(
   const reportFailure = useCallback((peer: Peer, failure: unknown) => {
     if (peers.current.get(peer.id) !== peer) return;
     console.warn('Direct peer connection:', failure);
-    setRemoteMedia((current) => ({ ...current, [peer.id]: { stream: peer.stream, status: 'failed' } }));
+    setRemoteMedia((current) => ({ ...current, [peer.id]: { stream: peer.stream, screenStream: peer.screenStream, status: 'failed' } }));
   }, []);
 
   const createPeer = useCallback((id: string, sessionId: string, offering = true): Peer => {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     const stream = new MediaStream();
-    const peer: Peer = { id, sessionId, pc, stream, candidates: [], queue: Promise.resolve() };
+    const screenStream = new MediaStream();
+    const peer: Peer = { id, sessionId, pc, stream, screenStream, candidates: [], queue: Promise.resolve() };
     peers.current.set(id, peer);
     // The answerer must use the transceivers created by setRemoteDescription.
     // Precreating its own would leave the offered sections receive-only.
     if (offering) {
-      for (const kind of ['audio', 'video'] as const) {
-        const track = local.current?.getTracks().find((item) => item.kind === kind);
+      // Stable slots: microphone, camera, screen. Reserving the screen slot
+      // lets either participant start sharing without renegotiation or glare.
+      for (const [index, kind] of (['audio', 'video', 'video'] as const).entries()) {
+        const track = index === 2 ? screen.current?.getVideoTracks()[0] : local.current?.getTracks().find((item) => item.kind === kind);
         const transceiver = pc.addTransceiver(track ?? kind, { direction: 'sendrecv' });
-        if (local.current) transceiver.sender.setStreams(local.current);
+        const source = index === 2 ? screen.current : local.current;
+        if (source) transceiver.sender.setStreams(source);
       }
     }
-    setRemoteMedia((current) => ({ ...current, [id]: { stream, status: 'connecting' } }));
+    setRemoteMedia((current) => ({ ...current, [id]: { stream, screenStream, status: 'connecting' } }));
     pc.onicecandidate = ({ candidate }) => {
       if (!candidate || candidate.type === 'relay' || peers.current.get(id) !== peer) return;
       send({ type: 'signal', to: id, sessionId, candidate: candidate.toJSON() });
     };
-    pc.ontrack = ({ track }) => {
+    pc.ontrack = ({ track, transceiver }) => {
       if (peers.current.get(id) !== peer) return;
-      if (!stream.getTracks().some((item) => item.id === track.id)) stream.addTrack(track);
-      setRemoteMedia((current) => ({ ...current, [id]: { stream, status: pc.connectionState === 'connected' ? 'connected' : 'connecting' } }));
+      const destination = pc.getTransceivers().indexOf(transceiver) === 2 ? screenStream : stream;
+      if (!destination.getTracks().some((item) => item.id === track.id)) destination.addTrack(track);
+      setRemoteMedia((current) => ({ ...current, [id]: { stream, screenStream, status: pc.connectionState === 'connected' ? 'connected' : 'connecting' } }));
     };
     pc.onconnectionstatechange = () => {
       if (peers.current.get(id) !== peer) return;
       const state = pc.connectionState;
       const status: PeerStatus = state === 'connected' ? 'connected' : state === 'failed' ? 'failed' : state === 'disconnected' || state === 'closed' ? 'disconnected' : 'connecting';
-      setRemoteMedia((current) => ({ ...current, [id]: { stream, status } }));
+      setRemoteMedia((current) => ({ ...current, [id]: { stream, screenStream, status } }));
     };
     return peer;
   }, [send]);
@@ -125,11 +136,12 @@ export function usePeerMedia(
         await target.pc.setRemoteDescription(signal.description);
         for (const candidate of target.candidates.splice(0)) await target.pc.addIceCandidate(candidate);
         if (signal.description.type === 'offer') {
-          for (const transceiver of target.pc.getTransceivers()) {
+          for (const [index, transceiver] of target.pc.getTransceivers().entries()) {
             transceiver.direction = 'sendrecv';
-            const track = local.current?.getTracks().find((item) => item.kind === transceiver.receiver.track.kind) ?? null;
+            const track = (index === 2 ? screen.current?.getVideoTracks()[0] : local.current?.getTracks().find((item) => item.kind === transceiver.receiver.track.kind)) ?? null;
             await transceiver.sender.replaceTrack(track);
-            if (local.current) transceiver.sender.setStreams(local.current);
+            const source = index === 2 ? screen.current : local.current;
+            if (source) transceiver.sender.setStreams(source);
           }
           const answer = await target.pc.createAnswer();
           await target.pc.setLocalDescription(answer);
@@ -176,6 +188,7 @@ export function usePeerMedia(
         peer.pc.onconnectionstatechange = null;
         peer.pc.onicecandidate = null;
         peer.pc.close();
+        peer.screenStream.getTracks().forEach((track) => track.stop());
         peer.stream.getTracks().forEach((track) => track.stop());
       }
       peers.current.clear();
@@ -205,6 +218,7 @@ export function usePeerMedia(
     setLocalStream(stream);
     send({ type: 'media',
       mic: stream?.getAudioTracks().some((track) => track.readyState === 'live') ?? false,
+      screen: screen.current?.getVideoTracks().some((track) => track.readyState === 'live') ?? false,
       camera: stream?.getVideoTracks().some((track) => track.readyState === 'live') ?? false,
     });
   }, [send]);
@@ -212,8 +226,8 @@ export function usePeerMedia(
   const syncSenders = useCallback(async () => {
     const tracks = local.current?.getTracks() ?? [];
     await Promise.all([...peers.current.values()].flatMap((peer) => (
-      peer.pc.getTransceivers().map(async (transceiver) => {
-        const track = tracks.find((item) => item.kind === transceiver.receiver.track.kind && item.readyState === 'live') ?? null;
+      peer.pc.getTransceivers().map(async (transceiver, index) => {
+        const track = (index === 2 ? screen.current?.getVideoTracks().find((item) => item.readyState === 'live') : tracks.find((item) => item.kind === transceiver.receiver.track.kind && item.readyState === 'live')) ?? null;
         try {
           await transceiver.sender.replaceTrack(track);
         } catch (failure) {
@@ -224,6 +238,56 @@ export function usePeerMedia(
       })
     )));
   }, [reportFailure]);
+
+  const stopScreen = useCallback(() => {
+    screenRequest.current += 1;
+    screen.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
+    screen.current = null;
+    setScreenStream(null);
+    setScreenBusy(false);
+    publishCapture(local.current);
+    void syncSenders();
+  }, [publishCapture, syncSenders]);
+
+  useLayoutEffect(() => {
+    stopScreen();
+    return () => {
+      screenRequest.current += 1;
+      screen.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
+      screen.current = null;
+    };
+  }, [activeCarpet, activeSelf, stopScreen]);
+
+  const startScreen = useCallback(async () => {
+    const owner = context.current.self;
+    if (!owner?.carpetId || screen.current) return;
+    const requestId = ++screenRequest.current;
+    const isCurrent = () => requestId === screenRequest.current && context.current.self?.id === owner.id && context.current.self?.carpetId === owner.carpetId;
+    setScreenBusy(true);
+    setError('');
+    let acquired: MediaStream | null = null;
+    try {
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('Screen sharing requires a supported browser on localhost or HTTPS.');
+      // Keep this call directly in the click handler's activation, before any await.
+      acquired = await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15, max: 30 } }, audio: false });
+      if (!isCurrent()) { acquired.getTracks().forEach((track) => track.stop()); return; }
+      const track = acquired.getVideoTracks()[0];
+      if (!track || track.readyState !== 'live') throw new Error('No screen was selected.');
+      track.contentHint = 'detail';
+      track.onended = stopScreen;
+      screen.current = acquired;
+      setScreenStream(acquired);
+      publishCapture(local.current);
+      await syncSenders();
+    } catch (failure) {
+      acquired?.getTracks().forEach((track) => track.stop());
+      if (isCurrent() && !(failure instanceof DOMException && failure.name === 'NotAllowedError')) {
+        setError(failure instanceof Error ? failure.message : 'Could not share your screen.');
+      }
+    } finally {
+      if (isCurrent()) setScreenBusy(false);
+    }
+  }, [publishCapture, stopScreen, syncSenders]);
 
   const chooseMedia = useCallback(async (mic: boolean, camera: boolean): Promise<boolean> => {
     const playerId = context.current.self?.id;
@@ -291,5 +355,5 @@ export function usePeerMedia(
     }
   }, [publishCapture, syncSenders]);
 
-  return { localStream, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }

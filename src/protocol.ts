@@ -16,12 +16,21 @@ export type MoveResult = {
   reason?: 'occupied' | 'wall' | 'busy' | 'invalid' | 'disconnected' | 'timeout';
 };
 
-export type Move = (x: number, y: number, facing: string) => Promise<MoveResult>;
+export type Move = (x: number, y: number, facing: string, sprint?: boolean) => Promise<MoveResult>;
+
+export type ChatMessage = {
+  type: 'chat';
+  carpetId: string;
+  from: string;
+  name: string;
+  text: string;
+};
 
 export type ServerMessage =
   | { type: 'welcome'; selfId: string; players: Player[]; serverNow: number }
   | { type: 'state'; players: Player[]; serverNow: number }
   | MoveResult
+  | ChatMessage
   | Signal
   | { type: 'error'; message: string };
 
