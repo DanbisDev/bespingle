@@ -216,8 +216,20 @@ try {
     assert(result.capture.some((track) => track.kind === 'video' && track.settings.width === 1280 && track.settings.height === 720 && track.settings.frameRate === 30), 'Capture requests 720p30');
   }
   await alice.screenshot({ path: `${output}/04-direct-call.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).first().click();
+  await alice.getByTestId('video-peer').locator('.select-video').click();
   await alice.locator('.call-strip.expanded').waitFor();
+  assert(await alice.getByTestId('video-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Clicking a tile enlarges that video');
+  await alice.evaluate(() => { window.__selectedVideo = document.querySelector('[data-testid="video-peer"] video'); });
+  await alice.getByTestId('video-self').locator('.select-video').focus();
+  await alice.keyboard.press('Enter');
+  assert(await alice.getByTestId('video-self').evaluate((tile) => tile.classList.contains('is-selected')), 'Keyboard selection switches the main video');
+  assert(await alice.evaluate(() => window.__selectedVideo === document.querySelector('[data-testid="video-peer"] video')), 'Switching preserves the mounted video element');
+  const focusedBounds = await alice.locator('.video-tile').evaluateAll((tiles) => tiles.map((tile) => ({ selected: tile.classList.contains('is-selected'), width: tile.getBoundingClientRect().width, top: tile.getBoundingClientRect().top, bottom: tile.getBoundingClientRect().bottom })));
+  assert(focusedBounds.find((tile) => tile.selected).width > 1000, 'Selected video fills the main area');
+  assert(focusedBounds.filter((tile) => !tile.selected).every((tile) => tile.bottom <= focusedBounds.find((tile) => tile.selected).top && tile.width < 210), 'Other videos stay small in the top row');
+  await alice.setViewportSize({ width: 390, height: 844 });
+  assert(await alice.getByTestId('video-self').evaluate((tile) => { const r = tile.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height > 200; }), 'Selected video fits a mobile viewport');
+  await alice.setViewportSize({ width: 1440, height: 900 });
   await alice.screenshot({ path: `${output}/05-expanded-videos.png`, fullPage: true });
   await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
 
@@ -236,13 +248,31 @@ try {
     const a = tileBounds[i], b = tileBounds[j];
     assert(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, 'Expanded screen and camera tiles do not overlap');
   }
+  await alice.getByTestId('screen-peer').locator('.select-video').click();
+  assert(await alice.getByTestId('screen-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'A shared screen can be selected independently');
+  await alice.setViewportSize({ width: 390, height: 844 });
+  const beforeThumbnailScroll = await alice.getByTestId('screen-peer').boundingBox();
+  await alice.locator('.video-grid').evaluate((row) => { row.scrollLeft = row.scrollWidth; });
+  const afterThumbnailScroll = await alice.getByTestId('screen-peer').boundingBox();
+  assert.deepEqual(afterThumbnailScroll, beforeThumbnailScroll, 'Scrolling the top row leaves the selected video in place');
+  await alice.getByTestId('video-peer').locator('.select-video').click();
+  assert(await alice.getByTestId('video-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Overflowing thumbnails remain selectable on mobile');
+  await alice.setViewportSize({ width: 1440, height: 900 });
+  await alice.getByTestId('screen-peer').locator('.select-video').click();
   await alice.screenshot({ path: `${output}/screen-sharing.png`, fullPage: true });
   await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
   await alice.getByRole('button', { name: 'Stop sharing screen', exact: true }).click();
   await bob.getByTestId('screen-peer').waitFor({ state: 'detached' });
   assert(await alice.evaluate(() => window.__screens.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))));
+  await alice.getByTestId('screen-peer').locator('.select-video').focus();
+  await alice.keyboard.press('Space');
+  assert(await alice.getByTestId('screen-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Space selects a shared screen');
   await bob.evaluate(() => { const track = window.__screens.at(-1).getVideoTracks()[0]; track.stop(); track.dispatchEvent(new Event('ended')); });
   await alice.getByTestId('screen-peer').waitFor({ state: 'detached' });
+  await alice.locator('.expanded .video-tile.is-selected').waitFor();
+  assert.equal(await alice.locator('.expanded .video-tile.is-selected').count(), 1, 'A disappearing selected share falls back to an available video');
+  await alice.keyboard.press('Escape');
+  await alice.locator('.call-strip.expanded').waitFor({ state: 'detached' });
   await alice.evaluate(() => { window.__cancelScreen = true; });
   await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
   await alice.waitForFunction(() => !document.querySelector('[aria-label="Share screen"]').disabled);

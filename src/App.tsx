@@ -66,7 +66,7 @@ function Dialog({ children, title, description, className = '' }: { children: Re
   </div></div>;
 }
 
-function VideoTile({ player, stream, local, media, screen = false }: { player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
+function VideoTile({ player, stream, local, media, screen = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
   const [playBlocked, setPlayBlocked] = useState(false);
   useEffect(() => {
@@ -77,11 +77,12 @@ function VideoTile({ player, stream, local, media, screen = false }: { player: P
     return () => { element.srcObject = null; };
   }, [stream]);
   const connectionLabel = local ? 'You' : media?.status === 'connected' ? '' : media?.status === 'failed' ? 'Cannot connect directly' : media?.status === 'disconnected' ? 'Disconnected' : 'Connecting…';
-  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
+  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
     <div className="video-avatar"><Avatar avatar={player.avatar} size={64} /></div>
     <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
     <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
     {connectionLabel && !local && <span className="connection-label">{connectionLabel}</span>}
+    <button className="select-video" aria-label={`Enlarge ${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} aria-pressed={selected} onClick={onSelect} />
     {playBlocked && !local && <button className="play-audio" onClick={(event) => { event.stopPropagation(); void video.current?.play().then(() => setPlayBlocked(false)).catch(() => {}); }}>Play audio</button>}
   </div>;
 }
@@ -96,15 +97,29 @@ export default function App() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
+  const [selectedTile, setSelectedTile] = useState('');
   const previousCarpet = useRef('');
   const connected = game.status === 'connected';
   const members = self?.carpetId ? game.players.filter((player) => player.carpetId === self.carpetId).sort((a, b) => a.id === self.id ? -1 : b.id === self.id ? 1 : a.name.localeCompare(b.name)) : [];
+
+  const screenMembers = members.filter((player) => player.id === self?.id ? !!media.screenStream : player.screen);
+  const tileIds = [...screenMembers.map((player) => `screen-${player.id}`), ...members.map((player) => player.id)];
+  const activeTile = expanded ? (tileIds.includes(selectedTile) ? selectedTile : tileIds[0]) : undefined;
+  const selectTile = (id: string) => { setSelectedTile(id); setExpanded(true); };
+
+  useEffect(() => {
+    if (!expanded) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [expanded]);
 
   useEffect(() => {
     const id = self?.carpetId ?? '';
     if (previousCarpet.current !== id) {
       previousCarpet.current = id;
       setExpanded(false);
+      setSelectedTile('');
     }
     setPromptCarpet(id && !media.hasChosenDevices ? id : '');
   }, [self?.carpetId, media.hasChosenDevices]);
@@ -138,10 +153,10 @@ export default function App() {
               <div className="conversation-heading"><span className="room-dot" style={{ background: carpet.color }} /><strong>{carpet.name}</strong><span className="conversation-count">{members.length} here</span>
                 <button className="expand-button" aria-label={expanded ? 'Return to game' : 'Enlarge conversation videos'} onClick={() => setExpanded((current) => !current)}><Icon name={expanded ? 'close' : 'expand'} /><span>{expanded ? 'Back to game' : 'Expand'}</span></button>
               </div>
-              <div className="video-grid" role="button" tabIndex={0} aria-label={expanded ? 'Shrink conversation videos' : 'Enlarge conversation videos'} onClick={() => setExpanded((current) => !current)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setExpanded((current) => !current); } }}>
-                {members.filter((player) => player.id === self?.id ? !!media.screenStream : player.screen).map((player) => <VideoTile key={`screen-${player.id}`} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
-                {members.map((player) => <VideoTile key={player.id} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
-              </div>
+              <div className="video-layout"><div className="video-grid" aria-label="Select a video to enlarge">
+                {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
+                {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
+              </div></div>
               {expanded && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
             </> : <div className="quiet-floor"><Icon name="people" /><span>Walk onto a carpet to start a conversation.</span><span className={`quiet-status ${self?.mic || self?.camera ? 'is-enabled' : ''}`}><i />{self?.mic && self?.camera ? 'Mic & camera on' : self?.mic ? 'Microphone on' : self?.camera ? 'Camera on' : 'Devices off'}</span></div>}
           </div>
