@@ -73,6 +73,25 @@ async function waitAt(page, point) {
     return Number(canvas.dataset.x) === x && Number(canvas.dataset.y) === y && canvas.dataset.moving !== 'true';
   }, point, { timeout: 3000 });
 }
+async function waitIdle(page) {
+  const idle = () => {
+    const canvas = document.querySelector('[data-testid="game-canvas"]');
+    const self = window.__players.find((player) => player.id === window.__selfId);
+    const moves = window.__sent.filter((message) => message.type === 'move');
+    const results = new Map(window.__messages.filter((message) => message.type === 'move-result').map((message) => [message.requestId, message]));
+    if (!self || self.move || moves.some((move) => !results.has(move.requestId))) return false;
+    // An acknowledgement may arrive before its state frame. For the latest
+    // accepted request, wait for that destination's authoritative landing.
+    const lastMove = moves.at(-1);
+    if (lastMove && results.get(lastMove.requestId).accepted && (self.x !== lastMove.x || self.y !== lastMove.y)) return false;
+    return canvas.dataset.moving !== 'true' && canvas.dataset.bouncing !== 'true' &&
+      Number(canvas.dataset.x) === self.x && Number(canvas.dataset.y) === self.y &&
+      Number(canvas.dataset.renderX) === self.x && Number(canvas.dataset.renderY) === self.y;
+  };
+  await page.waitForFunction(idle, null, { timeout: 5000 });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await page.waitForFunction(idle, null, { timeout: 5000 });
+}
 async function dismissPrompt(page) {
   if (await page.getByRole('dialog').count()) {
     await page.getByRole('button', { name: 'Neither', exact: false }).click();
@@ -226,7 +245,7 @@ try {
   await alice.keyboard.down('d');
   await alice.waitForTimeout(grid.stepDurationMs * 2.5);
   await alice.keyboard.up('d');
-  await alice.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]').dataset.moving !== 'true');
+  await waitIdle(alice);
   const afterHeld = await state(alice);
   assert(afterHeld.x - beforeHeld.x >= grid.size * 2, 'Holding a key continues walking tile by tile');
   assert.equal((afterHeld.x - beforeHeld.x) % grid.size, 0);
@@ -238,8 +257,9 @@ try {
   await alice.waitForTimeout(grid.stepDurationMs * 1.5);
   await alice.keyboard.up('d');
   await alice.keyboard.up('w');
-  await alice.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]').dataset.moving !== 'true');
+  await waitIdle(alice);
   const diagonalMoves = await alice.evaluate((start) => window.__sent.slice(start).filter((message) => message.type === 'move'), sentBefore);
+  console.log('Cardinal movement snapshots', JSON.stringify({ beforeHeld, afterHeld, sentBefore, diagonalMoves, settled: await state(alice) }));
   assert(diagonalMoves.length >= 1);
   let previous = afterHeld;
   for (const move of diagonalMoves) {
@@ -264,10 +284,7 @@ try {
   await Promise.all([[alice, 'a'], [bob, 'd']].map(([page, key]) => page.evaluate(({ code, key }) => {
     window.dispatchEvent(new KeyboardEvent('keyup', { code, key, bubbles: true }));
   }, { code: keyCodes[key], key })));
-  await Promise.all([alice, bob].map((page) => page.waitForFunction(() => {
-    const canvas = document.querySelector('[data-testid="game-canvas"]');
-    return canvas.dataset.moving !== 'true' && canvas.dataset.bouncing !== 'true';
-  })));
+  await Promise.all([alice, bob].map(waitIdle));
   const racePositions = await Promise.all([state(alice), state(bob)]);
   assert.equal(racePositions.filter((player) => player.x === 600 && player.y === 696).length, 1, 'Only one simultaneous contender claims the tile');
   assert(!samePoint(...racePositions), 'The losing contender remains on a distinct tile');
