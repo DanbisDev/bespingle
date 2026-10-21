@@ -312,6 +312,25 @@ function makeSprite(index: number, direction: Direction, seated: boolean, frame:
   return canvas;
 }
 
+const customSprites = new Map<string, HTMLImageElement>();
+function customSprite(id: string) {
+  let image = customSprites.get(id);
+  if (!image) {
+    if (customSprites.size >= 128) customSprites.delete(customSprites.keys().next().value!);
+    image = new Image();
+    let retries = 0;
+    image.onerror = () => {
+      // A busy bucket proxy may briefly reject a read. Keep the default visible
+      // and retry without retaining an unlimited number of image objects.
+      if (retries++ < 2) setTimeout(() => { if (customSprites.get(id) === image) image!.src = `/api/avatars/${id}`; }, 1500 * retries);
+    };
+    image.onload = () => window.dispatchEvent(new Event('avatar-loaded'));
+    image.src = `/api/avatars/${id}`;
+    customSprites.set(id, image);
+  }
+  return image;
+}
+
 /** Original 64-pixel chibi sprites, anchored at the feet and cached by pose. */
 export function drawAvatar(
   ctx: Context,
@@ -323,7 +342,18 @@ export function drawAvatar(
   frame = 0,
   scale = 1,
   danceFrame = 0,
+  customAvatar?: string,
 ) {
+  if (customAvatar && /^[a-f0-9]{64}$/.test(customAvatar)) {
+    const image = customSprite(customAvatar);
+    if (image.complete && image.naturalWidth === 384 && image.naturalHeight === 256) {
+      const row = facing === 'left' ? 1 : facing === 'right' ? 2 : facing === 'up' ? 3 : 0;
+      const column = danceFrame ? 4 + (danceFrame % 2) : seated ? 3 : frame ? (frame % 2 ? 1 : 2) : 0;
+      ctx.save(); ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(image, column * 64, row * 64, 64, 64, Math.round(x - 40 * scale), Math.round(y - 72.5 * scale), 80 * scale, 80 * scale);
+      ctx.restore(); return;
+    }
+  }
   const index = ((Math.trunc(avatar) % palettes.length) + palettes.length) % palettes.length;
   const direction: Direction = facing === 'up' || facing === 'left' || facing === 'right' ? facing : 'down';
   const pose = seated || frame === 0 ? 0 : Math.floor(frame) % 2 === 0 ? 2 : 1;

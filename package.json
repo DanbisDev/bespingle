@@ -14,7 +14,9 @@
     "test:chat": "node scripts/chat-smoke.mjs",
     "test:reactions": "node scripts/reactions-smoke.mjs",
     "test:dance": "node scripts/dance-smoke.mjs",
-    "test:backgrounds": "node scripts/background-smoke.mjs"
+    "test:backgrounds": "node scripts/background-smoke.mjs",
+    "test:audio": "node scripts/audio-smoke.mjs",
+    "test:avatars": "RUN_BROWSER_AVATARS=1 go test -count=1 -run TestAvatarBrowserFlow -v ./server"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "0.10.32",

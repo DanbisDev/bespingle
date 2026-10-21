@@ -89,15 +89,23 @@ h1, h2, p { margin: 0; }
 .expanded .expand-button { background: #202c3e; border: 1px solid #394961; padding: 7px 10px; font-size: 11px; }
 .expanded .video-layout { position: relative; flex: 1; min-height: 0; }
 .expanded .video-grid { height: 78px; gap: 7px; overflow-x: auto; }
+.expanded .gallery .video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); grid-auto-rows: minmax(160px, 1fr); height: 100%; gap: 12px; }
+.expanded .gallery .video-tile { width: 100%; min-width: 0; border-radius: 10px; }
+.gallery-button { margin-left: auto; flex-shrink: 0; border: 1px solid #394961; border-radius: 5px; background: #202c3e; color: #bdc9da; padding: 7px 10px; font-size: 11px; }
+.gallery-button:hover { background: #273346; color: #f5f8fc; }
+.gallery-button + .expand-button { margin-left: 0; }
+.pin-label { position: absolute; top: 6px; right: 6px; padding: 4px 7px; border-radius: 4px; background: #101722df; color: #f2f6fc; font-size: 10px; opacity: 0; }
+.select-video:hover .pin-label, .select-video:focus-visible .pin-label, .is-selected .pin-label { opacity: 1; }
+
 .select-video { position: absolute; inset: 0; z-index: 1; width: 100%; border: 0; background: transparent; cursor: zoom-in; border-radius: inherit; }
 .select-video:hover { box-shadow: inset 0 0 0 2px #81d8ca; }
 .select-video:focus-visible { outline: 3px solid #81d8ca; outline-offset: -3px; }
 .expanded .video-tile.is-selected { position: absolute; inset: 90px 0 0; width: 100%; min-width: 0; height: auto; border-radius: 10px; }
-.expanded .is-selected .select-video { cursor: default; }
+.expanded .is-selected .select-video { cursor: zoom-out; }
 .expanded .is-selected video { object-fit: contain; }
-.expanded .is-selected .video-avatar canvas { width: 144px !important; height: 144px !important; }
-.expanded .is-selected .video-caption { font-size: 13px; padding: 26px 13px 11px; }
-.expanded .is-selected .video-caption svg { width: 17px; height: 17px; }
+.expanded :is(.is-selected, .gallery .video-tile) .video-avatar canvas { width: 144px !important; height: 144px !important; }
+.expanded :is(.is-selected, .gallery .video-tile) .video-caption { font-size: 13px; padding: 26px 13px 11px; }
+.expanded :is(.is-selected, .gallery .video-tile) .video-caption svg { width: 17px; height: 17px; }
 .expanded .is-selected .connection-label { font-size: 11px; top: 12px; left: 12px; right: auto; max-width: calc(100% - 24px); padding: 5px 8px; }
 .expanded-hint { flex-shrink: 0; color: #a6b5ca; font-size: 11px; padding-top: 12px; text-align: center; }
 
@@ -112,6 +120,8 @@ h1, h2, p { margin: 0; }
 .location-info strong { display: block; font-size: 11px; font-weight: 600; }
 .location-info div > span { display: block; font-size: 10px; color: #a2aec0; margin-top: 4px; }
 .media-controls { display: flex; align-items: center; gap: 7px; }
+.noise-setting { display: flex; align-items: center; gap: 10px; margin: 20px 0; font-size: 14px; }
+.noise-setting input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }
 .device-button { border: 1px solid #334056; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: 8px; height: 36px; padding: 0 12px; background: #1b2535; color: #c0cbdc; font-size: 11px; }
 .device-button:hover:not(:disabled) { background: #29374b; border-color: #506580; }
 .device-button svg { height: 16px; width: 16px; }
@@ -197,6 +207,7 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
   .media-controls { gap: 6px; }
   .hud-divider { margin: 0 2px; }
   .expanded .conversation { padding: 10px; }
+  .expanded .gallery .video-grid { grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 8px; }
   .expanded-hint { font-size: 10px; }
   .dialog-backdrop { padding: 16px; }
   .dialog { padding: 24px; max-height: calc(100dvh - 32px); }
@@ -261,3 +272,11 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .background-preview .select-video { display: none; }
 
 .background-upload { margin-top: 12px; width: 100%; }
+
+.custom-avatar-help { margin: -8px 0 20px; padding: 12px; border: 1px solid #3a4a60; border-radius: 8px; font-size: 11px; line-height: 1.7; color: #afbbce; }
+.custom-avatar-help summary { cursor: pointer; color: #a2dfd0; font-weight: 600; }
+.custom-avatar-help p { margin: 10px 0; }
+.custom-avatar-help code { overflow-wrap: anywhere; color: #d2dfed; }
+.custom-avatar-help textarea { width: 100%; resize: vertical; padding: 8px; border: 1px solid #3a4a60; background: #131c29; color: #d2dfed; border-radius: 6px; font: inherit; }
+.custom-avatar-help .field-label { margin-top: 12px; }
+.custom-avatar-help button { margin: 6px 0; }

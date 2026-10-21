@@ -34,6 +34,7 @@ export default defineConfig({
     watch: { ignored: ['**/.cache/**', '**/test-results/**'] },
     proxy: {
       '/ws': { target: 'http://127.0.0.1:6666', ws: true },
+      '/mcp': { target: 'http://127.0.0.1:6666' },
       '/api': { target: 'http://127.0.0.1:6666' },
     },
   },

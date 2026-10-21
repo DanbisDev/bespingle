@@ -58,6 +58,7 @@ export interface Player {
   id: string;
   name: string;
   avatar: number;
+  customAvatar?: string;
   x: number;
   y: number;
   facing: string;

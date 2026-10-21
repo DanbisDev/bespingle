@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
-import { AVATARS, world } from './world';
+import { world } from './world';
 import type { Player } from './world';
-import { drawAvatar } from './art';
+import { Avatar } from './Avatar';
+import { AvatarPicker } from './AvatarPicker';
+import { readProfile, saveProfile } from './profile';
 import { useGame } from './useGame';
 import { usePeerMedia } from './usePeerMedia';
 import type { RemoteMedia } from './usePeerMedia';
@@ -30,19 +32,6 @@ function Icon({ name, off = false }: { name: IconName; off?: boolean }) {
     check: <path d="m5 12 4 4L19 6" />,
   };
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}{off && <path d="m3 3 18 18" strokeWidth="2" />}</svg>;
-}
-
-function Avatar({ avatar, size = 48 }: { avatar: number; size?: number }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = ref.current;
-    const ctx = canvas?.getContext('2d');
-    if (!ctx || !canvas) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.imageSmoothingEnabled = false;
-    drawAvatar(ctx, 48, 84, avatar, 'down', false, 0, 1);
-  }, [avatar]);
-  return <canvas ref={ref} width="96" height="96" style={{ width: size, height: size }} className="avatar-art" aria-hidden="true" />;
 }
 
 function Dialog({ children, title, description, className = '' }: { children: ReactNode; title: string; description?: string; className?: string }) {
@@ -81,11 +70,11 @@ function VideoTile({ player, stream, local, media, screen = false, selected, onS
   }, [stream]);
   const connectionLabel = local ? 'You' : media?.status === 'connected' ? '' : media?.status === 'failed' ? 'Cannot connect directly' : media?.status === 'disconnected' ? 'Disconnected' : 'Connecting…';
   return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
-    <div className="video-avatar"><Avatar avatar={player.avatar} size={64} /></div>
+    <div className="video-avatar"><Avatar avatar={player.avatar} customAvatar={player.customAvatar} size={64} /></div>
     <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
     <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
     {connectionLabel && !local && <span className="connection-label">{connectionLabel}</span>}
-    <button className="select-video" aria-label={`Enlarge ${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} aria-pressed={selected} onClick={onSelect} />
+    <button className="select-video" aria-label={`${selected ? 'Unpin' : 'Pin'} ${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} aria-pressed={selected} onClick={onSelect}><span className="pin-label">{selected ? 'Unpin' : 'Pin'}</span></button>
     {playBlocked && !local && <button className="play-audio" onClick={(event) => { event.stopPropagation(); void video.current?.play().then(() => setPlayBlocked(false)).catch(() => {}); }}>Play audio</button>}
   </div>;
 }
@@ -106,10 +95,16 @@ export default function App() {
   const self = game.players.find((player) => player.id === game.selfId);
   const carpet = world.carpets.find((item) => item.id === self?.carpetId);
   const media = usePeerMedia(self, game.players, game.send, game.signalHandler);
-  const [name, setName] = useState('');
-  const [avatar, setAvatar] = useState(0);
+  const [saved] = useState(readProfile);
+  const [name, setName] = useState(saved.name);
+  const [avatar, setAvatar] = useState(saved.avatar);
+  const [customAvatar, setCustomAvatar] = useState(saved.customAvatar);
+  const [customOption, setCustomOption] = useState(saved.customOption || saved.customAvatar);
+  const receiveAvatar = useCallback((id: string) => { setCustomAvatar(id); setCustomOption(id); }, []);
+  const picker = <AvatarPicker avatar={avatar} customAvatar={customAvatar} customOption={customOption} onChange={(index, id) => { setAvatar(index); setCustomAvatar(id); }} onUpload={receiveAvatar} />;
   const [editingProfile, setEditingProfile] = useState(false);
   const [editingBackground, setEditingBackground] = useState(false);
+  const [editingMicrophone, setEditingMicrophone] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [selectedTile, setSelectedTile] = useState('');
@@ -119,12 +114,12 @@ export default function App() {
 
   const screenMembers = members.filter((player) => player.id === self?.id ? !!media.screenStream : player.screen);
   const tileIds = [...screenMembers.map((player) => `screen-${player.id}`), ...members.map((player) => player.id)];
-  const activeTile = expanded ? (tileIds.includes(selectedTile) ? selectedTile : tileIds[0]) : undefined;
-  const selectTile = (id: string) => { setSelectedTile(id); setExpanded(true); };
+  const activeTile = expanded && tileIds.includes(selectedTile) ? selectedTile : undefined;
+  const selectTile = (id: string) => { setSelectedTile(expanded && activeTile === id ? '' : id); setExpanded(true); };
 
   useEffect(() => {
     if (!expanded) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setExpanded(false); };
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') { setExpanded(false); setSelectedTile(''); } };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, [expanded]);
@@ -141,7 +136,7 @@ export default function App() {
 
   const join = (event: FormEvent) => {
     event.preventDefault();
-    if (name.trim()) game.join(name.trim(), avatar);
+    if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.join(name.trim(), avatar, customAvatar); }
   };
 
   async function chooseDevices(mic: boolean, camera: boolean) {
@@ -150,13 +145,13 @@ export default function App() {
   }
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
-  const modalOpen = !connected || editingProfile || editingBackground || isMediaPrompt;
+  const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
 
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span><h1>Bespingle</h1></div>
       <div className="topbar-right"><span className="online-count"><i className={connected ? 'online-dot' : 'offline-dot'} />{game.players.length} online</span>
-        {self && <button className="profile-button" onClick={() => { setName(self.name); setEditingProfile(true); }} aria-label="Edit profile"><Avatar avatar={self.avatar} size={35} /><span>{self.name}</span><span className="profile-chevron">⌄</span></button>}
+        {self && <button className="profile-button" onClick={() => { setName(self.name); setAvatar(self.avatar); setCustomAvatar(self.customAvatar || ''); setEditingProfile(true); }} aria-label="Edit profile"><Avatar avatar={self.avatar} customAvatar={self.customAvatar} size={35} /><span>{self.name}</span><span className="profile-chevron">⌄</span></button>}
       </div>
     </header>
 
@@ -166,9 +161,10 @@ export default function App() {
           <div className="conversation">
             {carpet ? <>
               <div className="conversation-heading"><span className="room-dot" style={{ background: carpet.color }} /><strong>{carpet.name}</strong><span className="conversation-count">{members.length} here</span>
-                <button className="expand-button" aria-label={expanded ? 'Return to game' : 'Enlarge conversation videos'} onClick={() => setExpanded((current) => !current)}><Icon name={expanded ? 'close' : 'expand'} /><span>{expanded ? 'Back to game' : 'Expand'}</span></button>
+                {activeTile && <button className="gallery-button" onClick={() => setSelectedTile('')}>Show all videos</button>}
+                <button className="expand-button" aria-label={expanded ? 'Return to game' : 'Enlarge conversation videos'} onClick={() => { setSelectedTile(''); setExpanded((current) => !current); }}><Icon name={expanded ? 'close' : 'expand'} /><span>{expanded ? 'Back to game' : 'Expand'}</span></button>
               </div>
-              <div className="video-layout"><div className="video-grid" aria-label="Select a video to enlarge">
+              <div className={`video-layout ${activeTile ? 'has-pin' : 'gallery'}`}><div className="video-grid" aria-label="Pin or unpin a video">
                 {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
                 {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
               </div></div>
@@ -183,6 +179,7 @@ export default function App() {
       <footer className="game-hud">
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
         <div className="media-controls"><button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, self?.camera ?? false); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
+          <button className="device-button" disabled={!connected || media.busy || isMediaPrompt} aria-label="Microphone settings" onClick={() => setEditingMicrophone(true)}><Icon name="mic" /><span>Audio</span></button>
           <button className={self?.camera ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.camera ? 'Turn camera off' : 'Turn camera on'} aria-pressed={self?.camera ?? false} onClick={() => { void media.chooseMedia(self?.mic ?? false, !self?.camera); }}><Icon name="camera" off={!self?.camera} /><span>{self?.camera ? 'Camera on' : 'Camera off'}</span></button>
           <button className={`device-button ${media.background !== 'none' ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Camera background" onClick={() => setEditingBackground(true)}><Icon name="camera" /><span>Background</span></button>
           <button className={`device-button ${media.screenStream ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || isMediaPrompt} aria-label={media.screenStream ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream ? 'Stop sharing' : 'Share screen'}</span></button>
@@ -193,19 +190,27 @@ export default function App() {
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
       </footer>
-      {(game.error || (media.error && !isMediaPrompt && !editingBackground)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
+      {(game.error || (media.error && !isMediaPrompt && !editingBackground && !editingMicrophone)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
     </main>
 
     {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
-      <span className="welcome-pixel" aria-hidden="true"><Avatar avatar={avatar} size={88} /></span>
+      <span className="welcome-pixel" aria-hidden="true"><Avatar avatar={avatar} customAvatar={customAvatar} size={88} /></span>
       <form onSubmit={join}><label className="field-label" htmlFor="display-name">Your display name</label><input id="display-name" maxLength={32} required autoComplete="off" placeholder="What should we call you?" value={name} onChange={(event) => setName(event.target.value)} disabled={game.status === 'connecting'} />
-        <span className="field-label avatar-label">Choose your avatar</span><div className="avatar-picker" role="group" aria-label="Choose your avatar">{AVATARS.map((item, index) => <button type="button" key={item.name} title={item.name} aria-label={`${item.name} avatar`} aria-pressed={avatar === index} className={`avatar-option ${avatar === index ? 'selected' : ''}`} onClick={() => setAvatar(index)}><Avatar avatar={index} size={64} />{avatar === index && <span className="avatar-check"><Icon name="check" /></span>}</button>)}</div>
+        {picker}
         {game.error && <p className="form-error" role="alert">{game.error}</p>}
         <button className="primary-button" disabled={!name.trim() || game.status === 'connecting'}>{game.status === 'connecting' ? 'Opening the door…' : 'Enter the office'}<Icon name="arrow" /></button>
       </form><p className="join-note"><Icon name="mic" off /><Icon name="camera" off />Your microphone and camera start off.</p>
     </Dialog>}
 
-    {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { game.send({ type: 'profile', name: name.trim(), avatar: self.avatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={self.avatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required /><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save name<Icon name="check" /></button></div></form></Dialog>}
+    {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.send({ type: 'profile', name: name.trim(), avatar, customAvatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={avatar} customAvatar={customAvatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required />{picker}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save profile<Icon name="check" /></button></div></form></Dialog>}
+
+    {editingMicrophone && connected && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
+      <label className="noise-setting"><input type="checkbox" checked={media.noiseSuppression} disabled={media.busy || !media.noiseSupported} onChange={(event) => { void media.chooseNoiseSuppression(event.target.checked); }} />Noise suppression</label>
+      <p className="media-note" role="status">{!media.noiseSupported ? 'Noise suppression is unavailable in this browser.' : !self.mic ? 'Your microphone is off. This choice applies when you turn it on.' : media.noiseActive === undefined ? 'Your browser does not report whether noise suppression is active.' : media.noiseActive !== media.noiseSuppression ? `Noise suppression is currently ${media.noiseActive ? 'on' : 'off'}. Turn your microphone off and on to apply your choice; some browsers require this.` : media.noiseActive ? 'Noise suppression is active.' : 'Noise suppression is off.'}</p>
+      <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your choice lasts until you reload this page.</p>
+      {media.error && <p className="form-error" role="alert">{media.error}</p>}
+      <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
+    </Dialog>}
 
     {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
       {self.camera ? <div className="background-preview"><VideoTile player={self} stream={media.localStream} local selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}

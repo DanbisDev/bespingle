@@ -193,20 +193,21 @@ type dance struct {
 }
 
 type player struct {
-	Dance    *dance    `json:"dance,omitempty"`
-	Reaction *reaction `json:"reaction,omitempty"`
-	Move     *movement `json:"move,omitempty"`
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Avatar   int       `json:"avatar"`
-	X        float64   `json:"x"`
-	Y        float64   `json:"y"`
-	Facing   string    `json:"facing"`
-	Seated   bool      `json:"seated"`
-	CarpetID string    `json:"carpetId"`
-	Mic      bool      `json:"mic"`
-	Camera   bool      `json:"camera"`
-	Screen   bool      `json:"screen"`
+	Dance        *dance    `json:"dance,omitempty"`
+	Reaction     *reaction `json:"reaction,omitempty"`
+	Move         *movement `json:"move,omitempty"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Avatar       int       `json:"avatar"`
+	CustomAvatar string    `json:"customAvatar,omitempty"`
+	X            float64   `json:"x"`
+	Y            float64   `json:"y"`
+	Facing       string    `json:"facing"`
+	Seated       bool      `json:"seated"`
+	CarpetID     string    `json:"carpetId"`
+	Mic          bool      `json:"mic"`
+	Camera       bool      `json:"camera"`
+	Screen       bool      `json:"screen"`
 }
 
 type description struct {
@@ -266,6 +267,7 @@ func (c *client) stop() {
 }
 
 type hub struct {
+	avatars  *avatarService
 	mu       sync.Mutex
 	now      func() time.Time
 	world    world
@@ -281,7 +283,7 @@ func newHub(w world, origins []string) *hub {
 }
 
 func newHubWithClock(w world, origins []string, now func() time.Time) *hub {
-	h := &hub{world: w, now: now, clients: make(map[string]*client), origins: make(map[string]bool), done: make(chan struct{})}
+	h := &hub{avatars: newAvatarService(nil), world: w, now: now, clients: make(map[string]*client), origins: make(map[string]bool), done: make(chan struct{})}
 	for _, origin := range origins {
 		h.origins[origin] = true
 	}
@@ -514,12 +516,16 @@ func (h *hub) handle(c *client, data []byte) error {
 	switch envelope.Type {
 	case "join", "profile":
 		var msg struct {
-			Type   string `json:"type"`
-			Name   string `json:"name"`
-			Avatar *int   `json:"avatar"`
+			Type         string `json:"type"`
+			Name         string `json:"name"`
+			Avatar       *int   `json:"avatar"`
+			CustomAvatar string `json:"customAvatar,omitempty"`
 		}
 		if err := strictDecode(data, &msg); err != nil {
 			return errors.New("invalid profile message")
+		}
+		if msg.CustomAvatar != "" && !avatarIDPattern.MatchString(msg.CustomAvatar) {
+			return errors.New("invalid custom avatar")
 		}
 		name, err := validateProfile(msg.Name, msg.Avatar)
 		if err != nil {
@@ -537,11 +543,11 @@ func (h *hub) handle(c *client, data []byte) error {
 			if _, err := rand.Read(id); err != nil {
 				return errors.New("could not create participant ID")
 			}
-			c.player = player{ID: hex.EncodeToString(id), Name: name, Avatar: *msg.Avatar, X: spawn.X, Y: spawn.Y, Facing: "down", CarpetID: h.world.carpetAt(spawn.X, spawn.Y), Seated: h.world.isSeated(spawn.X, spawn.Y)}
+			c.player = player{ID: hex.EncodeToString(id), Name: name, Avatar: *msg.Avatar, CustomAvatar: msg.CustomAvatar, X: spawn.X, Y: spawn.Y, Facing: "down", CarpetID: h.world.carpetAt(spawn.X, spawn.Y), Seated: h.world.isSeated(spawn.X, spawn.Y)}
 			h.clients[c.player.ID] = c
 			h.enqueueLocked(c, marshal(stateMessage{Type: "welcome", SelfID: c.player.ID, Players: h.playersLocked(), ServerNow: h.now().UnixMilli()}))
 		} else {
-			c.player.Name, c.player.Avatar = name, *msg.Avatar
+			c.player.Name, c.player.Avatar, c.player.CustomAvatar = name, *msg.Avatar, msg.CustomAvatar
 		}
 		h.broadcastLocked()
 	case "move":
@@ -890,6 +896,10 @@ func (h *hub) handler() http.Handler {
 func (h *hub) handlerWithFrontend(frontend http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws", h.serveWS)
+	mux.Handle("/mcp", h.avatarOrigin(h.avatars.mcpHandler()))
+	mux.Handle("POST /api/avatar-session", h.avatarOrigin(http.HandlerFunc(h.avatars.session)))
+	mux.Handle("GET /api/avatar-session", h.avatarOrigin(http.HandlerFunc(h.avatars.session)))
+	mux.HandleFunc("GET /api/avatars/{id}", h.avatars.image)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
@@ -931,7 +941,12 @@ func main() {
 		}
 		defer frontend.root.Close()
 	}
+	store, err := avatarStorageFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	h := newHub(office, origins)
+	h.avatars = newAvatarService(store)
 	handler := h.handler()
 	if frontend != nil {
 		handler = h.handlerWithFrontend(frontend)

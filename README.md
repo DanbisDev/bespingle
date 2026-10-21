@@ -6,7 +6,8 @@ walk off to leave it. Built with React, TypeScript, Go, and WebRTC.
 
 Bespingle is an early proof of concept, published under the [MIT license](LICENSE).
 The office is open to anyone with its link. There are no accounts, passwords,
-attendance limits, or saved profiles. A server restart clears the office and
+attendance limits, or server-side profile accounts. Names and avatar preferences
+are remembered in a browser cookie for one year. A server restart clears the office and
 disconnects its participants.
 
 ## Run locally
@@ -21,7 +22,7 @@ npm run dev
 Open [http://localhost:5555](http://localhost:5555) in two browser windows. Each
 window joins as a separate person. The React development server runs on port
 5555; Go runs on `127.0.0.1:6666`. Vite proxies `/ws` and `/api` so the browser
-uses only port 5555. Ctrl+C stops both services.
+uses only port 5555. Vite also proxies `/mcp` for agent avatar uploads. Ctrl+C stops both services.
 
 To start them separately, run `npm run dev:backend` and
 `npm run dev:frontend` in separate terminals.
@@ -29,7 +30,7 @@ To start them separately, run `npm run dev:backend` and
 ## Explore the office
 
 - Choose a display name and one of six pixel avatars. Click your profile to
-  change your name later.
+  change your name or avatar later. Your choices are remembered in a cookie.
 - Move with **WASD or the arrow keys**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
   Hold **Shift** while moving to sprint up to **3 tiles per tick** (240 ms),
   stopping before walls or occupied tiles. Releasing Shift returns to walking.
@@ -62,6 +63,50 @@ To start them separately, run `npm run dev:backend` and
   people can share at once. Screen sharing sends video only, without system audio.
 - **Leave office** stops local devices. A new game starts with devices off.
 
+## Custom avatars with Claude or Codex
+
+The avatar selector keeps the six defaults and offers **Create your own with
+Claude or Codex** in both the join form and profile editor. Uploads never become
+a shared gallery: only the originating browser gets a custom selector option.
+The worn avatar is visible to office participants and its unlisted asset URL is
+readable by anyone who knows it. This is not private file storage.
+
+1. Connect your agent to the office's **Streamable HTTP** MCP endpoint:
+   `https://YOUR-OFFICE-DOMAIN/mcp` (locally, `http://localhost:5555/mcp`).
+   For Codex CLI, run `codex mcp add bespingle --url https://YOUR-OFFICE-DOMAIN/mcp`.
+   For Claude Code, run
+   `claude mcp add --transport http bespingle https://YOUR-OFFICE-DOMAIN/mcp`.
+   Hosted agents need a publicly reachable HTTPS address; localhost only works
+   for agents running on your own computer.
+2. In the selector, generate an upload code and copy its agent prompt. Describe
+   the character you want. The code grants one successful upload for 30 minutes;
+   share it only with your agent. Keep the selector open during upload.
+3. The agent calls `avatar_spec` to read the format, creates the PNG, then calls
+   `upload_avatar` with `uploadCode` and `pngBase64` (standard base64 file bytes,
+   without a data URL prefix). These tools provide the format and storage;
+   the agent supplies image generation or drawing capabilities.
+4. After storage succeeds, the browser selects the uploaded avatar. Click
+   **Enter the office** or **Save profile** to use and remember it.
+
+The sprite sheet is a transparent **384 × 256 PNG**, at most **1 MiB**: six
+64 × 64 columns (idle, walk 1, walk 2, seated, dance 1, dance 2) and four rows
+(down, left, right, up). Feet align at (32, 58) within each cell. All 24 poses
+belong to the same character. Invalid images are rejected before storage;
+accepted PNGs are decoded and re-encoded to remove metadata. Missing images
+fall back to the chosen default avatar.
+
+The cookie stores only a name, default selection, and custom avatar references;
+image bytes live in the bucket. It is scoped to this site, uses `SameSite=Lax`
+and `Secure` on HTTPS, and expires after one year. Clearing cookies removes
+this browser's saved selection; it does not delete uploaded bucket objects.
+Browser tabs share preferences on their next reload. Pending upload codes live
+in server memory and are invalidated by a deployment/restart. Uploaded avatars
+survive restarts. There is no bucket listing or avatar deletion API.
+
+Connection syntax follows the official
+[Codex MCP instructions](https://developers.openai.com/learn/docs-mcp) and
+[Claude Code MCP instructions](https://code.claude.com/docs/en/mcp).
+
 ## Direct audio and video
 
 The Go server handles names, positions, carpet membership, device flags, temporary carpet chat, and
@@ -85,6 +130,21 @@ participants still need enough upload capacity for those copies.
 Microphone and camera controls work independently. Disabling one stops only
 its own track. Leaving the game stops all capture, including late permission
 results. Use headphones when testing multiple windows in the same physical room.
+
+### Microphone noise suppression
+
+Noise suppression, echo cancellation, and automatic gain control are requested
+by default for every microphone. Open **Audio** beside the mic control to toggle
+noise suppression, including while speaking. Changes reuse the same microphone
+track and apply to everyone in your conversation. Some browsers require turning
+the mic off and on to apply a change; the panel will tell you when this is needed.
+Your choice lasts until the
+page is reloaded, including when you mute and re-enable the microphone.
+
+The panel reports whether the browser has enabled suppression and identifies
+unsupported browsers. Processing uses the browser's built-in audio engine on
+your device; effectiveness depends on the browser and microphone. It reduces
+background noise but cannot guarantee removal of every sound.
 
 ### Camera backgrounds
 
@@ -145,13 +205,31 @@ and [healthcheck documentation](https://docs.railway.com/deployments/healthcheck
 All participants and movement reservations live in the Go process. Deployments
 restart that process and disconnect existing sessions. Multiple replicas would
 create separate offices because state is not shared. This version needs no
-database or persistent volume.
+database or persistent volume for the office. Custom avatars require an optional
+Railway bucket:
+
+1. Add a **Bucket** to the Railway project.
+2. In the app service, configure `AVATAR_BUCKET_ENDPOINT`, `AVATAR_BUCKET_NAME`,
+   `AVATAR_BUCKET_ACCESS_KEY_ID`, `AVATAR_BUCKET_SECRET_ACCESS_KEY`, and
+   `AVATAR_BUCKET_REGION` using references to the bucket's `ENDPOINT`, `BUCKET`,
+   `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, and `REGION` variables. See `.env.example`.
+3. Redeploy the service. Test an upload through the selector.
+
+[Railway buckets](https://docs.railway.com/storage-buckets) are private and
+S3-compatible. The server signs uploads and proxies PNG reads; credentials stay
+on the server, and bucket CORS/public access is unnecessary. New buckets use
+virtual-hosted addressing. Set `AVATAR_BUCKET_FORCE_PATH_STYLE=true` only when
+an older bucket's Credentials tab requires it. Without bucket configuration,
+MCP format instructions and default avatars work; upload-code creation reports
+that storage is unavailable. Partial/invalid configuration fails startup.
 
 ## Checks
 
 ```sh
 npm run build
 npm run test:backend
+# After the build, with Chromium installed (or CHROME_PATH set):
+npm run test:avatars
 ```
 
 With the local development stack running in another terminal:
@@ -162,6 +240,7 @@ npm run test:grid
 npm run test:browser
 npm run test:chat
 npm run test:backgrounds
+npm run test:audio
 ```
 
 Alternatively, use an existing Chrome installation:
@@ -171,6 +250,7 @@ CHROME_PATH=/absolute/path/to/google-chrome npm run test:grid
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:browser
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:chat
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:backgrounds
+CHROME_PATH=/absolute/path/to/google-chrome npm run test:audio
 ```
 
 The browser checks use synthetic microphones and cameras. They cover grid
@@ -179,7 +259,10 @@ connections, device reuse, device shutdown, and temporary carpet chat delivery
 and clearing. The backgrounds check runs real segmentation, tests custom image
 compositing and live effect switching, and checks failure handling and capture
 cleanup. Screenshots go to the ignored
-`test-results/browser/` directory. Backend checks include race detection,
+`test-results/browser/` directory. The avatars check starts an isolated HTTP server with test storage, uploads through
+real MCP requests, and checks browser cookies, sprite rendering, profile edits,
+reload persistence, and selector isolation. It needs no Railway credentials.
+Backend checks include S3 request signing, MCP SDK interoperability, upload validation, and race detection,
 movement reservations, signaling isolation, and invalid messages and origins.
 
 ## Project layout
@@ -188,7 +271,9 @@ movement reservations, signaling isolation, and invalid messages and origins.
 | --- | --- |
 | `src/App.tsx` | Join/profile UI, media prompt, video strip, and HUD |
 | `src/GameCanvas.tsx` | Game rendering, follow camera, zoom, and tile movement |
-| `src/art.ts`, `src/avatarArt.ts` | Code-drawn pixel office and avatars |
+| `src/art.ts`, `src/avatarArt.ts` | Code-drawn pixel office and default/custom avatar rendering |
+| `src/AvatarPicker.tsx`, `src/profile.ts` | Agent upload instructions, pairing, and profile cookies |
+| `server/avatars.go` | HTTP MCP tools, upload codes, validation, and Railway S3 storage |
 | `src/useGame.ts` | WebSocket state and signaling delivery |
 | `src/usePeerMedia.ts` | Peer connections and device lifecycle |
 | `src/cameraBackground.ts`, `src/cameraBackground.worker.ts` | Local camera segmentation and background compositing |

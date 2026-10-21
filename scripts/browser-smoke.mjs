@@ -250,6 +250,12 @@ try {
     assert(result.capture.some((track) => track.kind === 'video' && track.settings.width === 1280 && track.settings.height === 720 && track.settings.frameRate === 30), 'Capture requests 720p30');
   }
   await alice.screenshot({ path: `${output}/04-direct-call.png`, fullPage: true });
+  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).click();
+  const equalTiles = await alice.locator('.expanded .video-tile').evaluateAll((tiles) => tiles.map((tile) => { const r = tile.getBoundingClientRect(); return { width: r.width, height: r.height }; }));
+  assert.equal(await alice.locator('.is-selected').count(), 0, 'Expand opens an unpinned gallery');
+  assert(equalTiles.every((tile) => tile.width > 500 && tile.height > 300 && Math.abs(tile.width - equalTiles[0].width) < 1 && Math.abs(tile.height - equalTiles[0].height) < 1), 'Unpinned cameras share the main view equally');
+  await alice.screenshot({ path: `${output}/equal-videos.png`, fullPage: true });
+
   await alice.getByTestId('video-peer').locator('.select-video').click();
   await alice.locator('.call-strip.expanded').waitFor();
   assert(await alice.getByTestId('video-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Clicking a tile enlarges that video');
@@ -261,6 +267,15 @@ try {
   const focusedBounds = await alice.locator('.video-tile').evaluateAll((tiles) => tiles.map((tile) => ({ selected: tile.classList.contains('is-selected'), width: tile.getBoundingClientRect().width, top: tile.getBoundingClientRect().top, bottom: tile.getBoundingClientRect().bottom })));
   assert(focusedBounds.find((tile) => tile.selected).width > 1000, 'Selected video fills the main area');
   assert(focusedBounds.filter((tile) => !tile.selected).every((tile) => tile.bottom <= focusedBounds.find((tile) => tile.selected).top && tile.width < 210), 'Other videos stay small in the top row');
+  await alice.getByTestId('video-self').locator('.select-video').click();
+  assert.equal(await alice.locator('.is-selected').count(), 0, 'Clicking a pinned tile unpins it');
+  await alice.locator('.expanded .gallery').waitFor();
+  assert(await alice.evaluate(() => window.__selectedVideo === document.querySelector('[data-testid="video-peer"] video')), 'Unpinning preserves video playback elements');
+  await alice.getByTestId('video-self').locator('.select-video').click();
+  await alice.getByRole('button', { name: 'Show all videos', exact: true }).click();
+  assert.equal(await alice.locator('.is-selected').count(), 0, 'Show all videos clears the pin');
+  await alice.getByTestId('video-self').locator('.select-video').click();
+
   await alice.setViewportSize({ width: 390, height: 844 });
   assert(await alice.getByTestId('video-self').evaluate((tile) => { const r = tile.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height > 200; }), 'Selected video fits a mobile viewport');
   await alice.setViewportSize({ width: 1440, height: 900 });
@@ -303,8 +318,8 @@ try {
   assert(await alice.getByTestId('screen-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Space selects a shared screen');
   await bob.evaluate(() => { const track = window.__screens.at(-1).getVideoTracks()[0]; track.stop(); track.dispatchEvent(new Event('ended')); });
   await alice.getByTestId('screen-peer').waitFor({ state: 'detached' });
-  await alice.locator('.expanded .video-tile.is-selected').waitFor();
-  assert.equal(await alice.locator('.expanded .video-tile.is-selected').count(), 1, 'A disappearing selected share falls back to an available video');
+  await alice.locator('.expanded .gallery').waitFor();
+  assert.equal(await alice.locator('.expanded .video-tile.is-selected').count(), 0, 'A disappearing pinned share returns to the equal gallery');
   await alice.keyboard.press('Escape');
   await alice.locator('.call-strip.expanded').waitFor({ state: 'detached' });
   await alice.evaluate(() => { window.__cancelScreen = true; });
@@ -409,7 +424,7 @@ try {
 
   await alice.getByRole('button', { name: 'Edit profile', exact: true }).click();
   await alice.getByRole('textbox', { name: 'Display name', exact: true }).fill('Alice Updated');
-  await alice.getByRole('button', { name: 'Save name', exact: false }).click();
+  await alice.getByRole('button', { name: 'Save profile', exact: false }).click();
   await bob.getByText('Alice Updated', { exact: true }).waitFor();
   console.log('Display name update synchronized');
 

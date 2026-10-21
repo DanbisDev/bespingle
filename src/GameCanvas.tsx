@@ -342,7 +342,7 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
           ctx.fillStyle = '#d3e5a9';
           ctx.fillRect(Math.round(position.x - 8), Math.round(position.y + 2), 16, 2);
         }
-        drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? Math.floor(now / 120) % 2 + 1 : 0, 1, dancing ? Math.floor(Math.max(0, time - player.dance!.startedAt) / 160) % 4 + 1 : 0);
+        drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? Math.floor(now / 120) % 2 + 1 : 0, 1, dancing ? Math.floor(Math.max(0, time - player.dance!.startedAt) / 160) % 4 + 1 : 0, player.customAvatar);
         nameplate(ctx, player, position.x, position.y, isSelf);
       }
       // Draw bubbles last so nearby avatars cannot obscure them.

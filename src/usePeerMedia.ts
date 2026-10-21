@@ -40,6 +40,10 @@ export function usePeerMedia(
   const peers = useRef(new Map<string, Peer>());
   const local = useRef<MediaStream | null>(null);
   const capture = useRef<MediaStream | null>(null);
+  const [noiseSuppression, setNoiseSuppression] = useState(true);
+  const noiseChoice = useRef(true);
+  const noiseSupported = !!navigator.mediaDevices?.getSupportedConstraints().noiseSuppression;
+  const [noiseActive, setNoiseActive] = useState<boolean | undefined>(undefined);
   const processor = useRef<CameraProcessor | null>(null);
   const [background, setBackground] = useState<CameraBackground>('none');
   const backgroundChoice = useRef<CameraBackground>('none');
@@ -59,6 +63,7 @@ export function usePeerMedia(
     local.current?.getTracks().forEach((track) => track.stop());
     local.current = null;
     setLocalStream(null);
+    setNoiseActive(undefined);
   }, []);
 
   const removePeer = useCallback((id: string) => {
@@ -229,6 +234,7 @@ export function usePeerMedia(
 
   const publishCapture = useCallback((raw: MediaStream | null) => {
     capture.current = raw;
+    setNoiseActive(raw?.getAudioTracks().find((track) => track.readyState === 'live')?.getSettings().noiseSuppression);
     const tracks = raw?.getTracks().map((track) => track.kind === 'video' && processor.current ? processor.current.track : track) ?? [];
     const stream = tracks.length ? new MediaStream(tracks) : null;
     local.current = stream;
@@ -335,7 +341,7 @@ export function usePeerMedia(
       if (needMic || needCamera) {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera and microphone require localhost or HTTPS.');
         acquired = await navigator.mediaDevices.getUserMedia({
-          audio: needMic ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
+          audio: needMic ? { echoCancellation: true, noiseSuppression: noiseChoice.current, autoGainControl: true } : false,
           video: needCamera ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } } : false,
         });
       }
@@ -389,6 +395,28 @@ export function usePeerMedia(
     }
   }, [publishCapture, syncSenders]);
 
+  const chooseNoiseSuppression = useCallback(async (enabled: boolean) => {
+    if (!noiseSupported) return;
+    const generation = epoch.current;
+    const requestId = ++request.current;
+    const isCurrent = () => generation === epoch.current && requestId === request.current;
+    setBusy(true); setError('');
+    try {
+      const track = capture.current?.getAudioTracks().find((item) => item.readyState === 'live');
+      if (track) {
+        // Update the published track in place, preserving echo cancellation and
+        // gain control, without recapturing or renegotiating peer connections.
+        await track.applyConstraints({ ...track.getConstraints(), noiseSuppression: enabled });
+      }
+      if (!isCurrent()) return;
+      noiseChoice.current = enabled;
+      setNoiseSuppression(enabled);
+      setNoiseActive(track?.getSettings().noiseSuppression);
+    } catch (failure) {
+      if (isCurrent()) setError(`Could not change noise suppression. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
+    } finally { if (isCurrent()) setBusy(false); }
+  }, [noiseSupported]);
+
   const chooseBackground = useCallback(async (choice: CameraBackground, image?: File) => {
     const generation = epoch.current;
     const requestId = ++request.current;
@@ -424,5 +452,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { noiseSuppression, noiseSupported, noiseActive, chooseNoiseSuppression, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }

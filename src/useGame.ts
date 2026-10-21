@@ -70,7 +70,7 @@ export function useGame() {
     setError('');
   }, [clearMoves]);
 
-  const join = useCallback((name: string, avatar: number) => {
+  const join = useCallback((name: string, avatar: number, customAvatar = '') => {
     socket.current?.close();
     pendingSignals.current = [];
     currentCarpet.current = currentSelf.current = '';
@@ -84,7 +84,7 @@ export function useGame() {
     const ws = new WebSocket(`${scheme}//${location.host}/ws`);
     socket.current = ws;
     ws.onopen = () => {
-      if (socket.current === ws) ws.send(JSON.stringify({ type: 'join', name, avatar }));
+      if (socket.current === ws) ws.send(JSON.stringify({ type: 'join', name, avatar, customAvatar }));
     };
     ws.onmessage = (event) => {
       if (socket.current !== ws) return;
