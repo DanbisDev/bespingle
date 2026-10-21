@@ -8,6 +8,7 @@ import { drawAvatar } from './art';
 import { useGame } from './useGame';
 import { usePeerMedia } from './usePeerMedia';
 import type { RemoteMedia } from './usePeerMedia';
+import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 
 type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
@@ -69,6 +70,7 @@ function Dialog({ children, title, description, className = '' }: { children: Re
 
 function VideoTile({ player, stream, local, media, screen = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
+  const speaking = useSpeaking(stream, !screen && player.mic && (local || media?.status === 'connected'));
   const [playBlocked, setPlayBlocked] = useState(false);
   useEffect(() => {
     const element = video.current;
@@ -78,7 +80,7 @@ function VideoTile({ player, stream, local, media, screen = false, selected, onS
     return () => { element.srcObject = null; };
   }, [stream]);
   const connectionLabel = local ? 'You' : media?.status === 'connected' ? '' : media?.status === 'failed' ? 'Cannot connect directly' : media?.status === 'disconnected' ? 'Disconnected' : 'Connecting…';
-  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
+  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
     <div className="video-avatar"><Avatar avatar={player.avatar} size={64} /></div>
     <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
     <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>

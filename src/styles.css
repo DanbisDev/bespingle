@@ -69,6 +69,8 @@ h1, h2, p { margin: 0; }
 .expand-button svg { width: 13px; height: 13px; }
 .video-grid { display: flex; gap: 7px; overflow: auto; height: 78px; min-height: 0; cursor: zoom-in; scrollbar-width: thin; scrollbar-color: #3e4c62 transparent; }
 .video-tile { width: 138px; min-width: 138px; height: 100%; background: #253246; border: 1px solid #3b4a60; border-radius: 7px; position: relative; overflow: hidden; isolation: isolate; }
+.video-tile.is-speaking { border-color: #8ed5ff; }
+.video-tile.is-speaking::after { content: ''; position: absolute; inset: 0; border: 2px solid #8ed5ff; border-radius: inherit; pointer-events: none; z-index: 3; }
 .video-avatar { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 105%, #435571 0%, #243147 70%); }
 .video-tile video { height: 100%; width: 100%; object-fit: cover; position: absolute; inset: 0; opacity: 0; }
 .video-tile.has-video video { opacity: 1; }

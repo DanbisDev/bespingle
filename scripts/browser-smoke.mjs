@@ -32,6 +32,25 @@ async function client(name, avatar) {
     navigator.mediaDevices.getUserMedia = async (...args) => {
       window.__captureRequests.push(args[0]);
       const stream = await capture(...args);
+      if (args[0].audio) {
+        // Send a controllable signal through the real peer connection so speech
+        // highlighting can be checked independently of Chromium's fake mic tone.
+        for (const track of stream.getAudioTracks()) { stream.removeTrack(track); track.stop(); }
+        const audio = new AudioContext();
+        const oscillator = audio.createOscillator();
+        const gain = audio.createGain();
+        const destination = audio.createMediaStreamDestination();
+        gain.gain.value = 0;
+        oscillator.connect(gain).connect(destination);
+        oscillator.start();
+        await audio.resume();
+        const track = destination.stream.getAudioTracks()[0];
+        stream.addTrack(track);
+        window.__setVoice = (level) => { gain.gain.value = level; };
+        const timer = setInterval(() => {
+          if (track.readyState === 'ended') { clearInterval(timer); oscillator.stop(); void audio.close(); }
+        }, 100);
+      }
       window.__streams.push(stream);
       if (window.__holdNextCapture) {
         window.__holdNextCapture = false;
@@ -205,6 +224,21 @@ try {
   await choose(bob, 'Both');
   await alice.waitForFunction(() => window.__pcs.some((pc) => pc.connectionState === 'connected'), null, { timeout: 20000 });
   await bob.waitForFunction(() => window.__pcs.some((pc) => pc.connectionState === 'connected'), null, { timeout: 20000 });
+  assert.equal(await alice.locator('.is-speaking').count(), 0, 'Silent microphones have no highlight');
+  await alice.evaluate(() => window.__setVoice(0.15));
+  await alice.locator('[data-testid="video-self"].is-speaking').waitFor();
+  await bob.locator('[data-testid="video-peer"].is-speaking').waitFor();
+  assert.equal(await alice.getByTestId('video-self').evaluate((tile) => getComputedStyle(tile).borderTopColor), 'rgb(142, 213, 255)', 'The speaking border is light blue');
+  assert.equal(await bob.getByTestId('video-self').evaluate((tile) => tile.classList.contains('is-speaking')), false, 'A silent participant stays unhighlighted');
+  await bob.evaluate(() => window.__setVoice(0.15));
+  await alice.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 2);
+  await alice.getByTestId('video-peer').locator('.select-video').click();
+  await alice.locator('.expanded .is-selected.is-speaking').waitFor();
+  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.screenshot({ path: `${output}/speaking-highlight.png`, fullPage: true });
+  for (const page of [alice, bob]) await page.evaluate(() => window.__setVoice(0));
+  for (const page of [alice, bob]) await page.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 0);
+  console.log('Speaking highlights passed: silence, local/remote voice, simultaneous speakers, light blue border, expanded view, and release');
   await alice.waitForTimeout(1800);
   const aliceStats = await stats(alice);
   const bobStats = await stats(bob);
@@ -350,6 +384,12 @@ try {
   assert(microphoneOnly.requests[1].audio && microphoneOnly.requests[1].video === false, 'Microphone-only requests no camera');
   const resumedAudio = microphoneOnly.tracks.find((track) => track.kind === 'audio' && track.state === 'live').id;
   assert.deepEqual(microphoneOnly.tracks.filter((track) => track.state === 'live').map((track) => track.kind), ['audio']);
+  await alice.evaluate(() => window.__setVoice(0.15));
+  await alice.locator('[data-testid="video-self"].is-speaking:not(.has-video)').waitFor();
+  await bob.locator('[data-testid="video-peer"].is-speaking:not(.has-video)').waitFor();
+  await alice.evaluate(() => window.__setVoice(0));
+  await alice.waitForFunction(() => !document.querySelector('[data-testid="video-self"]').classList.contains('is-speaking'));
+  await bob.waitForFunction(() => !document.querySelector('[data-testid="video-peer"]').classList.contains('is-speaking'));
   await alice.getByRole('button', { name: 'Turn camera on', exact: true }).click();
   await expectDevices(alice, true, true);
   const restoredCapture = await captureState(alice);
@@ -358,6 +398,14 @@ try {
   assert.equal(restoredCapture.tracks.find((track) => track.id === resumedAudio).state, 'live', 'Adding camera preserves the already enabled microphone');
   assert.deepEqual(restoredCapture.tracks.filter((track) => track.state === 'live').map((track) => track.kind).sort(), ['audio', 'video']);
   console.log('Open-floor toggles, remembered mute state, receive-only, and incremental capture passed');
+
+  await alice.evaluate(() => window.__setVoice(0.15));
+  await bob.locator('[data-testid="video-peer"].is-speaking').waitFor();
+  await alice.getByRole('button', { name: 'Turn microphone off', exact: true }).click();
+  for (const [page, tile] of [[alice, 'video-self'], [bob, 'video-peer']]) {
+    await page.waitForFunction((id) => !document.querySelector(`[data-testid="${id}"]`).classList.contains('is-speaking'), tile);
+  }
+  console.log('Camera-off speaking and immediate mute clearing passed');
 
   await alice.getByRole('button', { name: 'Edit profile', exact: true }).click();
   await alice.getByRole('textbox', { name: 'Display name', exact: true }).fill('Alice Updated');
