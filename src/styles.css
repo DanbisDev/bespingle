@@ -244,3 +244,18 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 /* Shared content stays readable and is never mirrored or cropped. */
 .video-tile.screen-tile { min-width: 200px; width: 200px; background: #080d15; border-color: #81d8ca; }
 .video-tile.screen-tile video { object-fit: contain; transform: none; }
+
+.background-settings { border: 0; padding: 0; margin: 20px 0; min-width: 0; }
+.background-settings legend { color: #c0cbdc; font-size: 12px; margin-bottom: 10px; }
+.background-choices { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.background-choice { padding: 8px; border: 1px solid #3a4a60; border-radius: 9px; background: #192434; color: #c0cbdc; font-size: 12px; }
+.background-choice[aria-pressed="true"] { border-color: #83d9c5; box-shadow: 0 0 0 1px #83d9c5; color: #baf6e8; }
+.background-choice > span { display: block; height: 38px; margin-bottom: 7px; border-radius: 5px; background: #3a4a60; }
+.background-blur > span { background: radial-gradient(ellipse at 30% 70%, #b7c3cc, transparent), radial-gradient(ellipse at 80% 20%, #718d77, #404f65); }
+.background-sky > span { background: linear-gradient(135deg, #162c53, #8bb8ce); }
+.background-forest > span { background: linear-gradient(135deg, #173c39, #708c66); }
+.background-settings > p { margin-top: 12px; color: #c0cbdc; font-size: 12px; }
+.background-preview .video-tile { width: 100%; height: 205px; margin-top: 20px; }
+.background-preview .select-video { display: none; }
+
+.background-upload { margin-top: 12px; width: 100%; }

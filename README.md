@@ -86,6 +86,28 @@ Microphone and camera controls work independently. Disabling one stops only
 its own track. Leaving the game stops all capture, including late permission
 results. Use headphones when testing multiple windows in the same physical room.
 
+### Camera backgrounds
+
+Use **Background** beside the camera control to choose **Blur**, **Sky**,
+**Forest**, or a custom JPG, PNG, or WebP image (up to 10 MB). You can also choose
+an effect in the device prompt before enabling your camera. **None** restores
+the original camera feed. Your choice lasts for the current page session.
+
+Effects use Google's open source [MediaPipe Image Segmenter](https://github.com/google-ai-edge/mediapipe)
+(`@mediapipe/tasks-vision` 0.10.32) and the Selfie Segmenter landscape model
+(float16, version 1), licensed under Apache 2.0. The runtime and model are served
+with the application; camera frames and custom images stay on the device until
+the processed video is sent directly to conversation peers. No inference service
+or CDN is required. See [third-party notices](public/models/NOTICE.txt) and the
+[bundled license](public/models/MEDIAPIPE-LICENSE.txt).
+
+Segmentation and compositing run in a dedicated worker, capped at 960 pixels
+wide and 20 fps, with one frame in flight. Slower devices may deliver fewer
+frames. Effects require WebAssembly, OffscreenCanvas, and canvas capture;
+unsupported browsers can continue using **None**. If an active effect fails,
+the camera stops instead of publishing the original background. Model-loading
+failures preserve the previous effect.
+
 ## Production container
 
 The multi-stage Docker build compiles the frontend and Go server into one
@@ -139,6 +161,7 @@ npx playwright install chromium
 npm run test:grid
 npm run test:browser
 npm run test:chat
+npm run test:backgrounds
 ```
 
 Alternatively, use an existing Chrome installation:
@@ -147,12 +170,15 @@ Alternatively, use an existing Chrome installation:
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:grid
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:browser
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:chat
+CHROME_PATH=/absolute/path/to/google-chrome npm run test:backgrounds
 ```
 
 The browser checks use synthetic microphones and cameras. They cover grid
 movement and collisions, carpet membership, game-area sizing, zoom, media
 connections, device reuse, device shutdown, and temporary carpet chat delivery
-and clearing. Screenshots go to the ignored
+and clearing. The backgrounds check runs real segmentation, tests custom image
+compositing and live effect switching, and checks failure handling and capture
+cleanup. Screenshots go to the ignored
 `test-results/browser/` directory. Backend checks include race detection,
 movement reservations, signaling isolation, and invalid messages and origins.
 
@@ -165,6 +191,7 @@ movement reservations, signaling isolation, and invalid messages and origins.
 | `src/art.ts`, `src/avatarArt.ts` | Code-drawn pixel office and avatars |
 | `src/useGame.ts` | WebSocket state and signaling delivery |
 | `src/usePeerMedia.ts` | Peer connections and device lifecycle |
+| `src/cameraBackground.ts`, `src/cameraBackground.worker.ts` | Local camera segmentation and background compositing |
 | `src/world.ts` | Shared map types, tile helpers, and wall collision |
 | `server/world.json` | Map geometry, carpets, chairs, and furniture |
 | `server/` | In-memory office, authoritative movement, signaling, and HTTP serving |

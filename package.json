@@ -13,9 +13,11 @@
     "test:grid": "node scripts/grid-smoke.mjs",
     "test:chat": "node scripts/chat-smoke.mjs",
     "test:reactions": "node scripts/reactions-smoke.mjs",
-    "test:dance": "node scripts/dance-smoke.mjs"
+    "test:dance": "node scripts/dance-smoke.mjs",
+    "test:backgrounds": "node scripts/background-smoke.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.32",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
@@ -24,6 +26,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "esbuild": "0.28.2",
     "playwright": "^1.64.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.0"

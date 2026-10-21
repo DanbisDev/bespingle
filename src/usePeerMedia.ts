@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { MutableRefObject } from 'react';
 import type { Player } from './world';
 import type { Send, Signal } from './protocol';
+import { createCameraBackground } from './cameraBackground';
+import type { CameraBackground, CameraProcessor } from './cameraBackground';
 
 type PeerStatus = 'connecting' | 'connected' | 'disconnected' | 'failed';
 export type RemoteMedia = { stream: MediaStream; screenStream: MediaStream; status: PeerStatus };
@@ -37,6 +39,12 @@ export function usePeerMedia(
   const [hasChosenDevices, setHasChosenDevices] = useState(false);
   const peers = useRef(new Map<string, Peer>());
   const local = useRef<MediaStream | null>(null);
+  const capture = useRef<MediaStream | null>(null);
+  const processor = useRef<CameraProcessor | null>(null);
+  const [background, setBackground] = useState<CameraBackground>('none');
+  const backgroundChoice = useRef<CameraBackground>('none');
+  const backgroundImage = useRef<File | undefined>(undefined);
+  const processing = useRef<AbortController | null>(null);
   const context = useRef({ self, players });
   context.current = { self, players };
   const epoch = useRef(0);
@@ -45,6 +53,9 @@ export function usePeerMedia(
   const activeSelf = self?.id ?? '';
 
   const stopCapture = useCallback(() => {
+    processing.current?.abort(); processing.current = null;
+    processor.current?.stop(); processor.current = null;
+    capture.current?.getTracks().forEach((track) => track.stop()); capture.current = null;
     local.current?.getTracks().forEach((track) => track.stop());
     local.current = null;
     setLocalStream(null);
@@ -173,6 +184,9 @@ export function usePeerMedia(
     return () => {
       epoch.current += 1;
       request.current += 1;
+      processing.current?.abort(); processing.current = null;
+      processor.current?.stop(); processor.current = null;
+      capture.current?.getTracks().forEach((track) => track.stop()); capture.current = null;
       local.current?.getTracks().forEach((track) => track.stop());
       local.current = null;
     };
@@ -213,7 +227,10 @@ export function usePeerMedia(
     }
   }, [players, self, createPeer, removePeer, reportFailure, send]);
 
-  const publishCapture = useCallback((stream: MediaStream | null) => {
+  const publishCapture = useCallback((raw: MediaStream | null) => {
+    capture.current = raw;
+    const tracks = raw?.getTracks().map((track) => track.kind === 'video' && processor.current ? processor.current.track : track) ?? [];
+    const stream = tracks.length ? new MediaStream(tracks) : null;
     local.current = stream;
     setLocalStream(stream);
     send({ type: 'media',
@@ -245,7 +262,7 @@ export function usePeerMedia(
     screen.current = null;
     setScreenStream(null);
     setScreenBusy(false);
-    publishCapture(local.current);
+    publishCapture(capture.current);
     void syncSenders();
   }, [publishCapture, syncSenders]);
 
@@ -277,7 +294,7 @@ export function usePeerMedia(
       track.onended = stopScreen;
       screen.current = acquired;
       setScreenStream(acquired);
-      publishCapture(local.current);
+      publishCapture(capture.current);
       await syncSenders();
     } catch (failure) {
       acquired?.getTracks().forEach((track) => track.stop());
@@ -301,9 +318,12 @@ export function usePeerMedia(
     try {
       // Reuse each enabled device's live track. Toggling the other device must
       // not reopen or interrupt it, and explicitly disabled tracks stop now.
-      const retained = (local.current?.getTracks() ?? []).filter((track) => {
+      const retained = (capture.current?.getTracks() ?? []).filter((track) => {
         const wanted = track.kind === 'audio' ? mic : camera;
-        if (!wanted) track.stop();
+        if (!wanted) {
+          if (track.kind === 'video') { processor.current?.stop(); processor.current = null; }
+          track.stop();
+        }
         return wanted && track.readyState === 'live';
       });
       publishCapture(retained.length ? new MediaStream(retained) : null);
@@ -324,13 +344,27 @@ export function usePeerMedia(
         return false;
       }
 
+      const cameraTrack = acquired?.getVideoTracks()[0];
+      if (cameraTrack && backgroundChoice.current !== 'none') {
+        const controller = new AbortController(); processing.current = controller;
+        const next = await createCameraBackground(cameraTrack, backgroundChoice.current, (message) => {
+          if (!capture.current?.getVideoTracks().includes(cameraTrack)) return;
+          setError(`Camera background stopped. ${message}`);
+          cameraTrack.stop(); processor.current?.stop(); processor.current = null;
+          publishCapture(new MediaStream((capture.current?.getAudioTracks() ?? [])));
+          void syncSenders();
+        }, backgroundChoice.current === 'custom' ? backgroundImage.current : undefined, controller.signal);
+        if (processing.current === controller) processing.current = null;
+        if (!isCurrent()) { next.stop(); acquired?.getTracks().forEach((track) => track.stop()); return false; }
+        processor.current = next;
+      }
       const tracks = [...retained, ...(acquired?.getTracks() ?? [])].filter((track) => track.readyState === 'live');
       publishCapture(tracks.length ? new MediaStream(tracks) : null);
       await syncSenders();
       if (!isCurrent()) {
         // A later choice may have retained these same live tracks. Only release
         // newly acquired tracks which the current selection no longer owns.
-        const currentTracks = local.current?.getTracks() ?? [];
+        const currentTracks = capture.current?.getTracks() ?? [];
         acquired?.getTracks().forEach((track) => {
           if (!currentTracks.includes(track)) track.stop();
         });
@@ -342,7 +376,7 @@ export function usePeerMedia(
       acquired?.getTracks().forEach((track) => track.stop());
       if (isCurrent()) {
         // Permission failure for a new device must not disable an existing one.
-        const remaining = local.current?.getTracks().filter((track) => track.readyState === 'live') ?? [];
+        const remaining = capture.current?.getTracks().filter((track) => track.readyState === 'live') ?? [];
         publishCapture(remaining.length ? new MediaStream(remaining) : null);
         await syncSenders();
         if (!isCurrent()) return false;
@@ -355,5 +389,40 @@ export function usePeerMedia(
     }
   }, [publishCapture, syncSenders]);
 
-  return { localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  const chooseBackground = useCallback(async (choice: CameraBackground, image?: File) => {
+    const generation = epoch.current;
+    const requestId = ++request.current;
+    const isCurrent = () => generation === epoch.current && requestId === request.current;
+    setBusy(true); setError('');
+    let next: CameraProcessor | null = null;
+    try {
+      if (image && (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type) || image.size > 10 * 1024 * 1024)) throw new Error('Choose a JPG, PNG, or WebP image smaller than 10 MB.');
+      const selectedImage = image ?? backgroundImage.current;
+      const cameraTrack = capture.current?.getVideoTracks().find((track) => track.readyState === 'live');
+      if (cameraTrack && choice !== 'none') {
+        const controller = new AbortController(); processing.current = controller;
+        next = await createCameraBackground(cameraTrack, choice, (message) => {
+          if (!next || processor.current !== next) return;
+          // A failed effect must not silently expose the real background.
+          cameraTrack.stop(); processor.current?.stop(); processor.current = null;
+          publishCapture(new MediaStream(capture.current?.getAudioTracks() ?? []));
+          void syncSenders(); setError(`Camera background stopped. ${message}`);
+        }, choice === 'custom' ? selectedImage : undefined, controller.signal);
+        if (processing.current === controller) processing.current = null;
+      }
+      if (!isCurrent()) { next?.stop(); return; }
+      if (image) backgroundImage.current = image;
+      const previous = processor.current;
+      processor.current = next;
+      backgroundChoice.current = choice; setBackground(choice);
+      publishCapture(capture.current);
+      await syncSenders();
+      previous?.stop();
+    } catch (failure) {
+      next?.stop();
+      if (isCurrent()) setError(`Could not apply camera background. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
+    } finally { if (isCurrent()) setBusy(false); }
+  }, [publishCapture, syncSenders]);
+
+  return { background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }

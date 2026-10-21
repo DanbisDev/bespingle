@@ -8,6 +8,7 @@ import { drawAvatar } from './art';
 import { useGame } from './useGame';
 import { usePeerMedia } from './usePeerMedia';
 import type { RemoteMedia } from './usePeerMedia';
+import type { CameraBackground } from './cameraBackground';
 
 type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
 const reactions = [
@@ -87,6 +88,17 @@ function VideoTile({ player, stream, local, media, screen = false, selected, onS
   </div>;
 }
 
+function BackgroundChoices({ value, busy, onChange }: { value: CameraBackground; busy: boolean; onChange: (choice: CameraBackground, image?: File) => Promise<void> }) {
+  const upload = useRef<HTMLInputElement>(null);
+  return <fieldset className="background-settings" disabled={busy}><legend>Camera background</legend>
+    <div className="background-choices">{([{ id: 'none', label: 'None' }, { id: 'blur', label: 'Blur' }, { id: 'sky', label: 'Sky' }, { id: 'forest', label: 'Forest' }] as const).map(({ id, label }) =>
+      <button type="button" key={id} className={`background-choice background-${id}`} aria-pressed={value === id} onClick={() => { void onChange(id); }}><span aria-hidden="true" />{label}</button>)}</div>
+    <input ref={upload} type="file" accept="image/jpeg,image/png,image/webp" hidden aria-label="Background image" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onChange('custom', file); event.target.value = ''; }} />
+    <button type="button" className="secondary-button background-upload" aria-pressed={value === 'custom'} onClick={() => upload.current?.click()}>Choose image…{value === 'custom' ? ' ✓' : ''}</button>
+    {busy && <p role="status">Preparing camera…</p>}
+  </fieldset>;
+}
+
 export default function App() {
   const game = useGame();
   const self = game.players.find((player) => player.id === game.selfId);
@@ -95,6 +107,7 @@ export default function App() {
   const [name, setName] = useState('');
   const [avatar, setAvatar] = useState(0);
   const [editingProfile, setEditingProfile] = useState(false);
+  const [editingBackground, setEditingBackground] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [selectedTile, setSelectedTile] = useState('');
@@ -135,7 +148,7 @@ export default function App() {
   }
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
-  const modalOpen = !connected || editingProfile || isMediaPrompt;
+  const modalOpen = !connected || editingProfile || editingBackground || isMediaPrompt;
 
   return <div className="app-shell">
     <header className="topbar">
@@ -169,6 +182,7 @@ export default function App() {
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
         <div className="media-controls"><button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, self?.camera ?? false); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
           <button className={self?.camera ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.camera ? 'Turn camera off' : 'Turn camera on'} aria-pressed={self?.camera ?? false} onClick={() => { void media.chooseMedia(self?.mic ?? false, !self?.camera); }}><Icon name="camera" off={!self?.camera} /><span>{self?.camera ? 'Camera on' : 'Camera off'}</span></button>
+          <button className={`device-button ${media.background !== 'none' ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Camera background" onClick={() => setEditingBackground(true)}><Icon name="camera" /><span>Background</span></button>
           <button className={`device-button ${media.screenStream ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || isMediaPrompt} aria-label={media.screenStream ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream ? 'Stop sharing' : 'Share screen'}</span></button>
           <span className="hud-divider" /><button className="leave-button" disabled={!connected} onClick={game.leave} aria-label="Leave office"><Icon name="exit" /></button>
         </div>
@@ -177,7 +191,7 @@ export default function App() {
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
       </footer>
-      {(game.error || (media.error && !isMediaPrompt)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
+      {(game.error || (media.error && !isMediaPrompt && !editingBackground)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
     </main>
 
     {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
@@ -191,7 +205,16 @@ export default function App() {
 
     {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { game.send({ type: 'profile', name: name.trim(), avatar: self.avatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={self.avatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required /><div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save name<Icon name="check" /></button></div></form></Dialog>}
 
+    {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
+      {self.camera ? <div className="background-preview"><VideoTile player={self} stream={media.localStream} local selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
+      <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
+      {media.error && <p className="form-error" role="alert">{media.error}</p>}
+      <p className="media-note">Your background is applied on your device and is visible to everyone in your conversation.</p>
+      <div className="form-actions"><button className="primary-button" onClick={() => setEditingBackground(false)}>Done<Icon name="check" /></button></div>
+    </Dialog>}
+
     {isMediaPrompt && <Dialog title={`You’re in ${carpet?.name ?? 'a conversation'}.`} description="What would you like to enable? You can hear and see others with your own devices off." className="media-dialog">
+      <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
       <div className="device-choices">
         <button disabled={media.busy} onClick={() => { void chooseDevices(true, true); }}><span className="choice-icons"><Icon name="mic" /><Icon name="camera" /></span><strong>Both</strong><span>Microphone & camera</span></button>
         <button disabled={media.busy} onClick={() => { void chooseDevices(true, false); }}><span className="choice-icons"><Icon name="mic" /></span><strong>Microphone only</strong><span>Join with your voice</span></button>
