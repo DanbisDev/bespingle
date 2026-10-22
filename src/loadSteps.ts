@@ -2,6 +2,11 @@ import type { LoadLevel } from './deviceLoad';
 
 // Heavy load must last this long before each further step down.
 export const downHold = 5_000;
+// After a step down, heavy load is not counted toward the next one for this
+// long. A step takes a while to show in the CPU pressure reading, and without
+// the wait a burst the first step relieved would walk quality to the bottom.
+// The encoder reports wait for a stream to settle in the same way.
+export const settle = 10_000;
 // Normal load must last this long before each step back up. It is long because
 // stepping down eases the encoder, which would otherwise invite a step up.
 export const upHold = 20_000;
@@ -20,6 +25,7 @@ export class LoadStepper {
   private normalSince: number | null = null;
   private hold = upHold;
   private lastUp: number | null = null;
+  private lastDown: number | null = null;
 
   // `headroom` is how many rungs the policy can still go below its starting
   // point. Zero, as in a manual setting, ends any step-down at once.
@@ -29,11 +35,14 @@ export class LoadStepper {
     if (level !== 'normal') this.normalSince = null;
     // A step up that stood through the probe window was right; back off no more.
     if (this.lastUp !== null && now - this.lastUp >= probeWindow) { this.lastUp = null; this.hold = upHold; }
-    if (level === 'heavy') {
+    if (level === 'heavy' && this.lastDown !== null && now - this.lastDown < settle) {
+      this.heavySince = null;
+    } else if (level === 'heavy') {
       this.heavySince ??= now;
       if (now - this.heavySince >= downHold && this.steps < headroom) {
         this.steps += 1;
-        this.heavySince = now;
+        this.heavySince = null;
+        this.lastDown = now;
         if (this.lastUp !== null) { this.hold = Math.min(longestUpHold, this.hold * 2); this.lastUp = null; }
       }
     } else if (level === 'normal') {

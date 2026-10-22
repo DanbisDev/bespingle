@@ -9,7 +9,7 @@ const bundle = await build({
   stdin: { contents: "export * from './src/loadSteps.ts'; export * from './src/videoQuality.ts';", resolveDir: new URL('..', import.meta.url).pathname, loader: 'ts' },
   bundle: true, write: false, format: 'esm', platform: 'neutral', logLevel: 'silent',
 });
-const { LoadStepper, downHold, upHold, qualityTarget, loadHeadroom } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
+const { LoadStepper, downHold, upHold, settle, qualityTarget, loadHeadroom } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
 function run(stepper, level, from, to, headroom = 4) {
   const changes = [];
@@ -23,7 +23,11 @@ function run(stepper, level, from, to, headroom = 4) {
   const stepper = new LoadStepper();
   const down = run(stepper, () => 'heavy', 0, 60_000);
   assert.deepEqual(down.map(({ steps }) => steps), [1, 2, 3, 4], 'Heavy load walks down one rung at a time to the headroom');
-  assert.deepEqual(down.map(({ now }) => now), [1, 2, 3, 4].map((n) => n * downHold), 'One step down per hold');
+  assert.deepEqual(down.map(({ now }) => now), [0, 1, 2, 3].map((n) => downHold + n * (settle + downHold)), 'One step down per hold, each after the last one settles');
+  // Heavy load that the first step relieved goes no further.
+  const burst = new LoadStepper();
+  run(burst, (now) => now < downHold + settle - 1000 ? 'heavy' : 'normal', 0, downHold + settle + 2 * downHold);
+  assert.equal(burst.steps, 1, 'A burst relieved by one step down stops there');
   const up = run(stepper, () => 'normal', 60_000, 200_000);
   assert.deepEqual(up.map(({ steps }) => steps), [3, 2, 1, 0], 'Normal load walks back up one rung at a time');
   assert.deepEqual(up.map(({ now }) => now - 60_000), [1, 2, 3, 4].map((n) => n * upHold), 'One step up per hold');
@@ -32,7 +36,7 @@ function run(stepper, level, from, to, headroom = 4) {
   const flap = (now) => Math.floor(now / 3000) % 2 ? 'heavy' : 'normal';
   assert.deepEqual(run(new LoadStepper(), flap, 0, 300_000), [], 'Flapping does not step down');
   const lowered = new LoadStepper();
-  run(lowered, () => 'heavy', 0, 2 * downHold);
+  run(lowered, () => 'heavy', 0, 2 * downHold + settle);
   assert.equal(lowered.steps, 2);
   assert.deepEqual(run(lowered, flap, 20_000, 300_000), [], 'Flapping does not step up');
   // A step up that brings the load straight back makes the next one wait longer.
@@ -251,7 +255,7 @@ try {
   const before = await negotiations([alice, bob]);
   const audioBefore = await audio(alice);
   await pressure(alice, 'serious');
-  const down = await watch(alice, 4 * 5000 + 6000);
+  const down = await watch(alice, 5000 + 3 * (10_000 + 5000) + 6000);
   assert.deepEqual(down, [full, { camera: 24, screen: null }, { camera: 15, screen: null }, { camera: 15, screen: 8 }, { camera: 15, screen: 5 }], `Heavy load steps the camera down first, then the screen share: ${JSON.stringify(down)}`);
   console.log('Heavy pressure steps 720p30 → 540p24 → 360p15, then the screen share to 8 and 5 fps');
 
