@@ -1,5 +1,10 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const output = fileURLToPath(new URL('../test-results/audio/', import.meta.url));
+await mkdir(output, { recursive: true });
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || undefined,
@@ -46,6 +51,7 @@ try {
     await page.getByRole('button', { name: 'Turn microphone on', exact: true }).click();
     await page.getByRole('button', { name: 'Turn microphone off', exact: true }).waitFor();
     await page.waitForFunction(() => !document.querySelector('[aria-label="Turn microphone off"]').disabled);
+    assert.equal(await page.getByRole('dialog').count(), 0, 'The mic button toggles the microphone without opening settings');
   };
   const micOff = async () => {
     await page.getByRole('button', { name: 'Turn microphone off', exact: true }).click();
@@ -61,8 +67,23 @@ try {
   });
   const note = (text) => page.getByRole('status').filter({ hasText: text }).waitFor();
 
+  // The mic button carries its settings: no separate Audio button, and a ⋯ reached by keyboard.
+  const bar = page.locator('.media-controls');
+  assert.equal(await bar.getByText('Audio', { exact: true }).count(), 0, 'The control bar has no Audio button');
+  assert.equal(await bar.getByRole('button', { name: 'Microphone settings', exact: true }).count(), 1);
+  await page.getByRole('group', { name: 'Microphone', exact: true }).screenshot({ path: `${output}/mic-off-control.png` });
+  await bar.screenshot({ path: `${output}/control-bar-mic-off.png` });
+  await page.getByRole('button', { name: 'Turn microphone on', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Microphone settings', 'The ⋯ follows the mic button in keyboard order');
+  await page.keyboard.press('Enter');
+  await page.getByRole('dialog', { name: 'Microphone settings', exact: true }).waitFor();
+  await done();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+
   await settings();
-  assert(await level('Standard').isChecked(), 'The level defaults to Standard');
+  assert(await level('Strong').isChecked(), 'The level defaults to Strong');
+  await page.getByRole('dialog').screenshot({ path: `${output}/microphone-settings.png` });
   for (const name of ['Off', 'Strong', 'Off']) await choose(name);
   await note('Your microphone is off.');
   await done();
@@ -93,6 +114,8 @@ try {
   assert.equal(await page.evaluate(() => window.__filterContexts.filter((item) => item.state === 'running').length), 1, 'One filter runs');
   // Chromium's fake microphone beeps loudly enough to count as speech through the filter.
   await page.locator('[data-testid="video-self"].is-speaking').waitFor({ timeout: 10000 });
+  await page.getByRole('group', { name: 'Microphone', exact: true }).screenshot({ path: `${output}/mic-on-control.png` });
+  await bar.screenshot({ path: `${output}/control-bar-mic-on.png` });
 
   // Live switching changes only the published track: no recapture and no new microphone.
   await settings();
@@ -184,17 +207,39 @@ try {
   await page.waitForFunction(() => window.__filterContexts.every((item) => item.state === 'closed'));
 
   // Each unsupported browser gets its own page, so one missing feature cannot mask another.
-  const enter = async (name, init, arg) => {
+  const visit = async (name, init, arg) => {
     const current = await context.newPage();
     current.on('pageerror', (error) => errors.push(error.message));
-    await current.addInitScript(init, arg);
+    if (init) await current.addInitScript(init, arg);
     await current.goto(process.env.BESPINGLE_URL || 'http://localhost:5555');
     await current.getByLabel('Your display name').fill(name);
     await current.getByRole('button', { name: 'Enter the office', exact: true }).click();
     await current.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+    return current;
+  };
+  const enter = async (name, init, arg) => {
+    const current = await visit(name, init, arg);
     await current.getByRole('button', { name: 'Microphone settings', exact: true }).click();
     return current;
   };
+  const turnOn = async (current) => {
+    await current.getByRole('button', { name: 'Turn microphone on', exact: true }).click();
+    await current.getByRole('button', { name: 'Turn microphone off', exact: true }).waitFor();
+    await current.waitForFunction(() => !document.querySelector('[aria-label="Turn microphone off"]').disabled);
+  };
+
+  // The very first mic-on of a fresh visit, with the settings never opened, reaches Strong.
+  const fresh = await visit('Fresh visit');
+  await turnOn(fresh);
+  await fresh.waitForFunction(() => window.__filterContexts.some((item) => item.state === 'running'));
+  const first = await fresh.evaluate(() => window.__captures.map(({ constraints }) => constraints.audio.noiseSuppression));
+  assert.deepEqual(first, [true], 'The first mic-on captures with built-in suppression');
+  assert.equal(await fresh.getByRole('alert').count(), 0, 'The first mic-on at Strong raises no alert');
+  await fresh.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  await fresh.getByRole('status').filter({ hasText: 'Strong noise filtering is active' }).waitFor();
+  await fresh.getByRole('button', { name: 'Done', exact: false }).click();
+  await fresh.getByRole('button', { name: 'Leave office', exact: true }).click();
+  await fresh.close();
 
   // Browsers without built-in suppression still offer Strong, using the filter alone.
   const plain = await enter('No built-in suppression', () => { navigator.mediaDevices.getSupportedConstraints = () => ({}); });
@@ -216,11 +261,15 @@ try {
     const lacking = await enter(`No ${missing}`, (missing) => { delete window[missing]; }, missing);
     assert(await lacking.getByRole('radio', { name: 'Strong', exact: true }).isDisabled(), `Strong is disabled with no ${missing}`);
     await lacking.locator('#noise-strong-note').filter({ hasText: 'Unavailable in this browser.' }).waitFor();
-    assert(await lacking.getByRole('radio', { name: 'Standard', exact: true }).isChecked(), `Standard stays the default with no ${missing}`);
+    assert(await lacking.getByRole('radio', { name: 'Standard', exact: true }).isChecked(), `Standard is the default with no ${missing}`);
+    await lacking.getByRole('button', { name: 'Done', exact: false }).click();
+    await turnOn(lacking);
+    assert.equal(await lacking.getByRole('alert').count(), 0, `Turning the mic on with no ${missing} raises no alert`);
+    assert.equal(await lacking.evaluate(() => window.__captures[0].constraints.audio.noiseSuppression), true, `Standard captures with built-in suppression with no ${missing}`);
     await lacking.close();
   }
   assert.deepEqual(errors, []);
-  console.log('PASS: real browser noise levels: Standard default, choices with the mic off, capture constraints per level, Strong publishes the filter output, live switching without recapture, speaking on Strong, mid-call and startup filter failure fall back to Standard, failure recovery, mute/re-enable, cleanup, and unsupported browsers');
+  console.log('PASS: real browser noise levels: Strong default reached on the first mic-on, ⋯ settings opener by click and keyboard, choices with the mic off, capture constraints per level, Strong publishes the filter output, live switching without recapture, speaking on Strong, mid-call and startup filter failure fall back to Standard, failure recovery, mute/re-enable, cleanup, and unsupported browsers defaulting to Standard without an alert');
 } finally {
   await browser.close();
 }

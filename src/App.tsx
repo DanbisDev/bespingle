@@ -13,7 +13,7 @@ import type { NoiseLevel, RemoteMedia } from './usePeerMedia';
 import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 
-type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
+type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check' | 'more';
 const reactions = [
   { emoji: '👋', label: 'Wave' }, { emoji: '👍', label: 'Thumbs up' },
   { emoji: '❤️', label: 'Love' }, { emoji: '😂', label: 'Laugh' },
@@ -30,6 +30,7 @@ function Icon({ name, off = false }: { name: IconName; off?: boolean }) {
     people: <><circle cx="9" cy="8" r="3" /><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5" /></>,
     exit: <><path d="M10 4H4v16h6m4-13 5 5-5 5m-6-5h11" /></>,
     check: <path d="m5 12 4 4L19 6" />,
+    more: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth="3" />,
   };
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}{off && <path d="m3 3 18 18" strokeWidth="2" />}</svg>;
 }
@@ -213,8 +214,10 @@ export default function App() {
       </div>
       <footer className="game-hud">
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
-        <div className="media-controls"><button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, self?.camera ?? false); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
-          <button className="device-button" disabled={!connected || media.busy || isMediaPrompt} aria-label="Microphone settings" onClick={() => setEditingMicrophone(true)}><Icon name="mic" /><span>Audio</span></button>
+        <div className="media-controls"><div className={`device-group ${self?.mic ? 'enabled' : ''}`} role="group" aria-label="Microphone">
+            <button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, self?.camera ?? false); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
+            <button className={`device-button device-more ${self?.mic ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Microphone settings" aria-haspopup="dialog" title="Microphone settings" onClick={() => setEditingMicrophone(true)}><Icon name="more" /></button>
+          </div>
           <button className={self?.camera ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.camera ? 'Turn camera off' : 'Turn camera on'} aria-pressed={self?.camera ?? false} onClick={() => { void media.chooseMedia(self?.mic ?? false, !self?.camera); }}><Icon name="camera" off={!self?.camera} /><span>{self?.camera ? 'Camera on' : 'Camera off'}</span></button>
           <button className={`device-button ${media.background !== 'none' ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Camera background" onClick={() => setEditingBackground(true)}><Icon name="camera" /><span>Background</span></button>
           <button className={`device-button ${media.screenStream ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || isMediaPrompt} aria-label={media.screenStream ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream ? 'Stop sharing' : 'Share screen'}</span></button>

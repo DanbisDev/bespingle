@@ -50,12 +50,13 @@ export function usePeerMedia(
   const peers = useRef(new Map<string, Peer>());
   const local = useRef<MediaStream | null>(null);
   const capture = useRef<MediaStream | null>(null);
-  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>('standard');
-  const levelChoice = useRef<NoiseLevel>('standard');
-  const levelRequest = useRef(0);
-  const [levelBusy, setLevelBusy] = useState(false);
   const standardSupported = !!navigator.mediaDevices?.getSupportedConstraints().noiseSuppression;
   const strongSupported = noiseFilterSupported();
+  // Each visit starts at Strong where the browser can run the filter, and is not remembered.
+  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>(strongSupported ? 'strong' : 'standard');
+  const levelChoice = useRef<NoiseLevel>(noiseLevel);
+  const levelRequest = useRef(0);
+  const [levelBusy, setLevelBusy] = useState(false);
   const [noiseActive, setNoiseActive] = useState<boolean | undefined>(undefined);
   const [filtering, setFiltering] = useState(false);
   const filter = useRef<ActiveFilter | null>(null);

@@ -133,6 +133,12 @@ h1, h2, p { margin: 0; }
 .device-button svg { height: 16px; width: 16px; }
 .device-button.enabled { color: #a7eee0; background: #183b3c; border-color: #376c68; }
 .device-button.enabled:hover { background: #23504f; }
+/* The microphone toggle and its settings opener read as one split control. */
+.device-group { display: flex; }
+.device-group > .device-button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.device-group .device-more { width: 26px; padding: 0; border-left-color: #2a3546; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.device-group.enabled .device-more { border-left-color: #2b5653; }
+.device-group > .device-button:hover:not(:disabled), .device-group > .device-button:focus-visible { position: relative; z-index: 1; }
 .hud-divider { height: 25px; width: 1px; background: #303c50; margin: 0 5px; }
 .leave-button { width: 36px; height: 36px; border: 1px solid #614044; background: #36232d; color: #f0b6ae; display: grid; place-items: center; border-radius: 8px; }
 .leave-button:hover:not(:disabled) { border-color: #a8686a; background: #54313c; }

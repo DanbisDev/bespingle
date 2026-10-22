@@ -254,8 +254,12 @@ try {
     return { filtered: track.id !== raw.id, live: track.readyState === 'live', raw: raw.readyState };
   });
   await alice.evaluate(() => window.__setVoice(0.15));
+  // Alice never chose a level, so her call started at the Strong default.
+  await alice.waitForFunction(() => window.__pcs.findLast((item) => item.connectionState === 'connected')?.getTransceivers()[0].sender.track?.id !== window.__streams[0].getAudioTracks()[0].id);
+  assert.deepEqual(await sent(), { filtered: true, live: true, raw: 'live' }, 'A call starts at Strong, sending the filter output');
   await alice.getByRole('button', { name: 'Microphone settings', exact: true }).click();
-  for (const [name, filtered] of [['Strong', true], ['Off', false], ['Strong', true], ['Standard', false]]) {
+  assert(await alice.getByRole('radio', { name: 'Strong', exact: true }).isChecked(), 'Strong is the default level');
+  for (const [name, filtered] of [['Off', false], ['Strong', true], ['Standard', false], ['Strong', true], ['Standard', false]]) {
     const bytes = await received();
     await alice.getByRole('radio', { name, exact: true }).click();
     await alice.waitForFunction((name) => { const input = document.querySelector(`.noise-level input[aria-label="${name}"]`); return input.checked && !input.closest('fieldset').disabled; }, name);
