@@ -35,6 +35,7 @@ export interface Grid {
 export interface Move {
   toX: number;
   toY: number;
+  facing: string;
   startedAt: number;
   durationMs: number;
 }
@@ -68,6 +69,8 @@ export interface Player {
   camera: boolean;
   screen?: boolean;
   move?: Move;
+  /** At most one step queued behind move, starting exactly when move ends. */
+  next?: Move;
 }
 
 export const world: World = worldData as World;

@@ -31,7 +31,9 @@ To start them separately, run `npm run dev:backend` and
 
 - Choose a display name and one of six pixel avatars. Click your profile to
   change your name or avatar later. Your choices are remembered in a cookie.
-- Move with **WASD or the arrow keys**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
+- Move with **WASD or the arrow keys**. Hold a key to keep walking at a steady pace without
+  pausing between tiles; each 48-pixel tile takes 240 ms. Releasing the key finishes the
+  current tile and stops there.
   Hold **Shift** while moving to sprint up to **3 tiles per tick** (240 ms),
   stopping before walls or occupied tiles. Releasing Shift returns to walking.
   The hidden grid reserves both the source and destination during a step, so

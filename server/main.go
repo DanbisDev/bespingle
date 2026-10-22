@@ -178,6 +178,7 @@ func finite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
 type movement struct {
 	ToX        float64 `json:"toX"`
 	ToY        float64 `json:"toY"`
+	Facing     string  `json:"facing"`
 	StartedAt  int64   `json:"startedAt"`
 	DurationMs int64   `json:"durationMs"`
 }
@@ -193,9 +194,12 @@ type dance struct {
 }
 
 type player struct {
-	Dance        *dance    `json:"dance,omitempty"`
-	Reaction     *reaction `json:"reaction,omitempty"`
-	Move         *movement `json:"move,omitempty"`
+	Dance    *dance    `json:"dance,omitempty"`
+	Reaction *reaction `json:"reaction,omitempty"`
+	Move     *movement `json:"move,omitempty"`
+	// Next is at most one step accepted ahead of Move. It starts exactly when
+	// Move ends, from Move's destination, so a held key never pauses.
+	Next         *movement `json:"next,omitempty"`
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
 	Avatar       int       `json:"avatar"`
@@ -364,45 +368,66 @@ func (h *hub) broadcastLocked() {
 	}
 }
 
-// Current tiles and every tile on an in-flight path are exclusive. Keeping the
-// source occupied until arrival also prevents swaps and followers walking
-// through an avatar while it is still crossing the edge of its old tile.
 func (h *hub) occupiedLocked(position point, except *client) bool {
+	return h.occupiedAtLocked(position, except, h.now().UnixMilli())
+}
+
+// Current tiles and every tile on an in-flight or queued path are exclusive.
+// Keeping the source occupied until arrival also prevents swaps and followers
+// walking through an avatar while it is still crossing the edge of its old
+// tile. A claim beginning at server time at, such as a queued step, may use
+// the tiles an in-flight step leaves behind once that step has ended. Its
+// destination and every queued tile stay reserved: a queued step can still be
+// cancelled, leaving the avatar on the in-flight destination.
+func (h *hub) occupiedAtLocked(position point, except *client, at int64) bool {
 	for _, c := range h.clients {
 		if c == except {
 			continue
 		}
-		if (point{X: c.player.X, Y: c.player.Y}) == position {
-			return true
-		}
+		tail := point{X: c.player.X, Y: c.player.Y}
 		if m := c.player.Move; m != nil {
-			// Moves are axis aligned. Reserve intermediate sprint tiles too so
-			// another player cannot enter or cross the path before arrival.
-			if c.player.X == m.ToX && position.X == c.player.X && position.Y >= math.Min(c.player.Y, m.ToY) && position.Y <= math.Max(c.player.Y, m.ToY) ||
-				c.player.Y == m.ToY && position.Y == c.player.Y && position.X >= math.Min(c.player.X, m.ToX) && position.X <= math.Max(c.player.X, m.ToX) {
+			to := point{X: m.ToX, Y: m.ToY}
+			if position == to || at < m.StartedAt+m.DurationMs && onPath(tail, to, position) {
 				return true
 			}
+			tail = to
+		}
+		if position == tail {
+			return true
+		}
+		if n := c.player.Next; n != nil && onPath(tail, point{X: n.ToX, Y: n.ToY}, position) {
+			return true
 		}
 	}
 	return false
 }
 
+// Moves are axis aligned. Reserve intermediate sprint tiles too so another
+// player cannot enter or cross the path before arrival.
+func onPath(from, to, position point) bool {
+	return from.X == to.X && position.X == from.X && position.Y >= math.Min(from.Y, to.Y) && position.Y <= math.Max(from.Y, to.Y) ||
+		from.Y == to.Y && position.Y == from.Y && position.X >= math.Min(from.X, to.X) && position.X <= math.Max(from.X, to.X)
+}
+
 func (h *hub) settleMovesLocked(now time.Time) bool {
 	changed := false
 	for _, c := range h.clients {
-		m := c.player.Move
-		if m == nil || now.UnixMilli() < m.StartedAt+m.DurationMs {
-			continue
+		// A queued step's start is pinned to the previous end, so a late tick
+		// may land several steps at once, each in order.
+		for m := c.player.Move; m != nil && now.UnixMilli() >= m.StartedAt+m.DurationMs; m = c.player.Move {
+			c.player.X, c.player.Y = m.ToX, m.ToY
+			previousCarpet := c.player.CarpetID
+			c.player.CarpetID = h.world.carpetAt(m.ToX, m.ToY)
+			if previousCarpet != c.player.CarpetID {
+				c.player.Screen = false
+			}
+			c.player.Seated = h.world.isSeated(m.ToX, m.ToY)
+			c.player.Move, c.player.Next = c.player.Next, nil
+			if c.player.Move != nil {
+				c.player.Facing = c.player.Move.Facing
+			}
+			changed = true
 		}
-		c.player.X, c.player.Y = m.ToX, m.ToY
-		previousCarpet := c.player.CarpetID
-		c.player.CarpetID = h.world.carpetAt(m.ToX, m.ToY)
-		if previousCarpet != c.player.CarpetID {
-			c.player.Screen = false
-		}
-		c.player.Seated = h.world.isSeated(m.ToX, m.ToY)
-		c.player.Move = nil
-		changed = true
 	}
 	if changed {
 		h.dirty = true
@@ -562,11 +587,19 @@ func (h *hub) handle(c *client, data []byte) error {
 		if err := strictDecode(data, &msg); err != nil || msg.RequestID == 0 || msg.RequestID > 9007199254740991 || msg.X == nil || msg.Y == nil {
 			return errors.New("invalid movement message")
 		}
-		if c.player.Move != nil {
-			h.moveResultLocked(c, msg.RequestID, false, "busy")
-			return nil
-		}
 		from := point{X: c.player.X, Y: c.player.Y}
+		startedAt := h.now().UnixMilli()
+		if m := c.player.Move; m != nil {
+			// Accept one step ahead, in the second half of the current one,
+			// starting from its destination exactly when it ends. A client can
+			// never be more than one stride ahead of the server's clock.
+			end := m.StartedAt + m.DurationMs
+			if c.player.Next != nil || end-startedAt > h.world.Grid.StepDurationMs/2 {
+				h.moveResultLocked(c, msg.RequestID, false, "busy")
+				return nil
+			}
+			from, startedAt = point{X: m.ToX, Y: m.ToY}, end
+		}
 		to, onGrid := h.world.gridPoint(point{X: *msg.X, Y: *msg.Y})
 		if !onGrid || !h.world.validStep(from, to, msg.Facing) {
 			h.moveResultLocked(c, msg.RequestID, false, "invalid")
@@ -576,7 +609,7 @@ func (h *hub) handle(c *client, data []byte) error {
 			h.moveResultLocked(c, msg.RequestID, false, "wall")
 			return nil
 		}
-		if h.occupiedLocked(to, c) {
+		if h.occupiedAtLocked(to, c, startedAt) {
 			h.moveResultLocked(c, msg.RequestID, false, "occupied")
 			return nil
 		}
@@ -586,17 +619,37 @@ func (h *hub) handle(c *client, data []byte) error {
 			dx, dy := to.X-from.X, to.Y-from.Y
 			for tiles := 1; tiles < 3; tiles++ {
 				next := point{X: to.X + dx, Y: to.Y + dy}
-				if !h.world.canMove(to, next) || h.occupiedLocked(next, c) {
+				if !h.world.canMove(to, next) || h.occupiedAtLocked(next, c, startedAt) {
 					break
 				}
 				to = next
 			}
 		}
 		c.player.Dance = nil
-		c.player.Facing = msg.Facing
-		c.player.Move = &movement{ToX: to.X, ToY: to.Y, StartedAt: h.now().UnixMilli(), DurationMs: h.world.Grid.StepDurationMs}
+		step := &movement{ToX: to.X, ToY: to.Y, Facing: msg.Facing, StartedAt: startedAt, DurationMs: h.world.Grid.StepDurationMs}
+		if c.player.Move != nil {
+			c.player.Next = step
+		} else {
+			c.player.Facing, c.player.Move = msg.Facing, step
+		}
 		h.moveResultLocked(c, msg.RequestID, true, "")
 		h.broadcastLocked()
+	case "move-cancel":
+		// Releasing a held key withdraws a queued step that has not started.
+		// An in-flight step always finishes, so the avatar stops on a tile.
+		var msg struct {
+			Type      string `json:"type"`
+			RequestID uint64 `json:"requestId"`
+		}
+		if err := strictDecode(data, &msg); err != nil || msg.RequestID == 0 || msg.RequestID > 9007199254740991 {
+			return errors.New("invalid movement message")
+		}
+		dropped := c.player.Next != nil
+		c.player.Next = nil
+		h.moveResultLocked(c, msg.RequestID, dropped, "")
+		if dropped {
+			h.broadcastLocked()
+		}
 	case "dance":
 		var msg struct {
 			Type string `json:"type"`
