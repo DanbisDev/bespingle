@@ -83,3 +83,6 @@ try {
 } finally {
   await browser.close();
 }
+
+// The RNNoise filter behind the Strong noise level.
+await import('./noise-filter-smoke.mjs');
