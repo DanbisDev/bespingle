@@ -164,6 +164,21 @@ try {
   await settings(); await choose('Off'); await choose('Standard'); await done();
   await micOn();
   assert.equal((await state())[4].tracks[0].settings.noiseSuppression, true, 'Recapture applies suppression in browsers that cannot switch live');
+
+  // A change overtaken by the microphone ending still stands, and leaves the control usable.
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route('**/*.wasm', async (route) => { await held; await route.continue(); });
+  await settings();
+  await level('Strong').click();
+  await page.waitForFunction(() => document.querySelector('.noise-levels').disabled);
+  await page.evaluate(() => window.__captures[4].stream.getAudioTracks()[0].stop());
+  release();
+  await settled();
+  assert(await level('Strong').isChecked(), 'A level change overtaken by the microphone ending is recorded');
+  await page.unroute('**/*.wasm');
+  await page.waitForFunction(() => window.__filterContexts.every((item) => item.state === 'closed'));
+  await done();
   await page.getByRole('button', { name: 'Leave office', exact: true }).click();
   await page.waitForFunction(() => window.__captures.every(({ stream }) => stream.getTracks().every((track) => track.readyState === 'ended')));
   await page.waitForFunction(() => window.__filterContexts.every((item) => item.state === 'closed'));

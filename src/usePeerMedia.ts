@@ -478,25 +478,29 @@ export function usePeerMedia(
   // With the microphone off it only records the choice. With it on, built-in suppression is
   // toggled on the live capture track and each sender's track is replaced in place, so nothing
   // is recaptured or renegotiated. Resolves to the level in effect afterwards.
-  const chooseNoiseLevel = useCallback(async (level: NoiseLevel): Promise<NoiseLevel> => {
+  const chooseNoiseLevel = useCallback(async function choose(level: NoiseLevel): Promise<NoiseLevel> {
     if (level === 'strong' && !strongSupported) return levelChoice.current;
     const generation = epoch.current;
     const requestId = ++levelRequest.current;
     const track = capture.current?.getAudioTracks().find((item) => item.readyState === 'live');
     if (!track) {
-      levelChoice.current = level; setNoiseLevel(level);
+      // As the latest request, this also clears a busy state left by a change it overtook.
+      levelChoice.current = level; setNoiseLevel(level); setLevelBusy(false);
       return level;
     }
     filterStarting.current?.abort();
     const isLatest = () => generation === epoch.current && requestId === levelRequest.current;
     // A microphone turned off or reopened meanwhile makes this change stale too.
     const isCurrent = () => isLatest() && !!capture.current?.getAudioTracks().includes(track) && track.readyState === 'live';
+    // A change overtaken only by the microphone still stands: it is recorded with the microphone
+    // off, or applied to the microphone that replaced this one.
+    const stale = () => isLatest() ? choose(level) : levelChoice.current;
     setLevelBusy(true); setError('');
     let next: ActiveFilter | null = null;
     try {
       // Preserves echo cancellation and gain control on the same capture track.
       if (standardSupported && canSuppress(track)) await track.applyConstraints({ ...track.getConstraints(), noiseSuppression: level !== 'off' });
-      if (!isCurrent()) return levelChoice.current;
+      if (!isCurrent()) return stale();
       const previous = filter.current;
       let stopped = '';
       if (level === 'strong' && previous?.source === track) next = previous;
@@ -504,7 +508,7 @@ export function usePeerMedia(
         try { next = await startFilter(track); } catch (failure) {
           stopped = failure instanceof Error ? failure.message : 'The noise filter could not start.';
         }
-        if (!isCurrent()) { next?.stop(); return levelChoice.current; }
+        if (!isCurrent()) { next?.stop(); return stale(); }
       }
       // The new track is ready before any sender changes, and the old filter stops only after.
       const effective: NoiseLevel = level === 'strong' && !next ? 'standard' : level;
@@ -517,7 +521,8 @@ export function usePeerMedia(
       return effective;
     } catch (failure) {
       if (next && next !== filter.current) next.stop();
-      if (isCurrent()) setError(`Could not change noise suppression. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
+      if (!isCurrent()) return stale();
+      setError(`Could not change noise suppression. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
       return levelChoice.current;
     } finally { if (isLatest()) setLevelBusy(false); }
   }, [publishCapture, standardSupported, startFilter, strongStopped, strongSupported, syncSenders]);
