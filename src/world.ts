@@ -143,3 +143,84 @@ export function isStepBlocked(from: Point, to: Point): boolean {
     return enter < leave && leave > 0 && enter < 1;
   });
 }
+
+const tileKey = (point: Point) => `${point.x},${point.y}`;
+
+/** Every tile another avatar stands on or has an accepted step across, including sprint strides. */
+export function occupiedTiles(players: Player[], exceptId: string): Set<string> {
+  const tiles = new Set<string>();
+  for (const player of players) {
+    if (player.id === exceptId) continue;
+    let from = { x: player.x, y: player.y };
+    tiles.add(tileKey(from));
+    for (const step of [player.move, player.next]) {
+      if (!step) break;
+      const to = { x: step.toX, y: step.toY };
+      const count = Math.round((Math.abs(to.x - from.x) + Math.abs(to.y - from.y)) / world.grid.size);
+      for (let i = 1; i <= count; i++) {
+        tiles.add(tileKey({ x: from.x + (to.x - from.x) * i / count, y: from.y + (to.y - from.y) * i / count }));
+      }
+      from = to;
+    }
+  }
+  return tiles;
+}
+
+// The same stable neighbour order as the server's spawn search.
+function neighbours(point: Point): Point[] {
+  const { size } = world.grid;
+  return [[size, 0], [0, size], [-size, 0], [0, -size]].map(([dx, dy]) => ({ x: point.x + dx, y: point.y + dy }));
+}
+
+/** Breadth-first search over free tiles, mapping each reachable tile to the one it is entered from. */
+function reachable(from: Point, occupied: Set<string>): Map<string, Point | null> {
+  const parents = new Map<string, Point | null>([[tileKey(from), null]]);
+  const queue = [from];
+  for (let i = 0; i < queue.length; i++) {
+    for (const next of neighbours(queue[i])) {
+      const key = tileKey(next);
+      if (parents.has(key) || occupied.has(key) || isStepBlocked(queue[i], next)) continue;
+      parents.set(key, queue[i]);
+      queue.push(next);
+    }
+  }
+  return parents;
+}
+
+function pathTo(parents: Map<string, Point | null>, to: Point): Point[] {
+  const path: Point[] = [];
+  for (let tile: Point | null | undefined = to; tile; tile = parents.get(tileKey(tile))) path.unshift(tile);
+  return path;
+}
+
+/** The shortest walk between two tiles, both ends included, or null when none exists. */
+export function findRoute(from: Point, to: Point, occupied: Set<string>): Point[] | null {
+  const parents = reachable(from, occupied);
+  return parents.has(tileKey(to)) ? pathTo(parents, to) : null;
+}
+
+/**
+ * The walk toward a pointed-at spot. It ends on the clicked tile when that can
+ * be reached, otherwise on the nearest reachable tile found by searching
+ * outward from it, so it is only [from] when nothing else can be reached.
+ */
+export function planWalk(from: Point, target: Point, occupied: Set<string>): Point[] {
+  const { size, originX, originY } = world.grid;
+  const parents = reachable(from, occupied);
+  const maxX = originX + Math.floor((world.width - originX) / size) * size;
+  const maxY = originY + Math.floor((world.height - originY) / size) * size;
+  const inside = (point: Point) => point.x >= originX && point.x <= maxX && point.y >= originY && point.y <= maxY;
+  const snapped = snapToGrid(target.x, target.y);
+  const start = { x: Math.max(originX, Math.min(maxX, snapped.x)), y: Math.max(originY, Math.min(maxY, snapped.y)) };
+  const seen = new Set([tileKey(start)]);
+  const queue = [start];
+  for (let i = 0; i < queue.length; i++) {
+    if (parents.has(tileKey(queue[i]))) return pathTo(parents, queue[i]);
+    for (const next of neighbours(queue[i])) {
+      if (!inside(next) || seen.has(tileKey(next))) continue;
+      seen.add(tileKey(next));
+      queue.push(next);
+    }
+  }
+  return [from];
+}

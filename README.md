@@ -40,6 +40,10 @@ To start them separately, run `npm run dev:backend` and
   players cannot share tiles or swap through one another. A blocked move into
   another player makes the moving avatar bounce back. Walls block movement;
   furniture does not.
+- **Double-click a spot** to walk there by yourself, around walls and other
+  players, at the normal walking pace. Double-clicking somewhere you cannot
+  stand walks to the nearest reachable tile. Arriving on a chair or carpet sits
+  or joins just as walking there would. Any direction key stops the walk.
 - Press **Z** to toggle dancing for everyone to see. Walking stops the dance.
 - **Scroll over the game area** to zoom. The camera follows your avatar.
 - Share a carpet to talk. The Nook, The Studio, and The Commons have 2, 4, and 8

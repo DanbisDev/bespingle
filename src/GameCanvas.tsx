@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { drawAvatar, drawGameWorld } from './art';
-import { findCarpet, findChair, world, type Player } from './world';
+import { findCarpet, findChair, findRoute, occupiedTiles, planWalk, world, type Player } from './world';
 import type { CancelMove, Move } from './protocol';
 
 interface GameCanvasProps {
@@ -20,6 +20,10 @@ type PendingStep = { id: string; fromX: number; fromY: number; startsAt: number 
 type Bounce = { id: string; direction: Direction; startedAt: number };
 // A withdrawn queued step stays hidden until the server's answer and the state after it arrive.
 type Cancel = { startsAt: number; answer?: { accepted: boolean; players: Player[] } };
+type Tile = { x: number; y: number };
+// A double-clicked walk: the tiles from where it was planned to its destination.
+type Route = { id: string; destination: Tile; path: Tile[] };
+type StepSource = 'tap' | 'held' | 'route';
 
 const directions: Record<string, Direction> = {
   KeyW: 'up', KeyA: 'left', KeyS: 'down', KeyD: 'right',
@@ -139,6 +143,9 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
   // key before it starts withdraws it, so the avatar stops on the current tile.
   const heldStepRef = useRef<number | null>(null);
   const cancelRef = useRef<Cancel | null>(null);
+  const routeRef = useRef<Route | null>(null);
+  // Server start time of a queued route step, withdrawn if a key takes over.
+  const routeStepRef = useRef<number | null>(null);
   const retryAtRef = useRef(0);
   const bounceRef = useRef<Bounce | null>(null);
   const bounceCountRef = useRef(0);
@@ -165,6 +172,8 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
     pendingRef.current = null;
     heldStepRef.current = null;
     cancelRef.current = null;
+    routeRef.current = null;
+    routeStepRef.current = null;
     retryAtRef.current = 0;
     bounceRef.current = null;
     bounceCountRef.current = 0;
@@ -186,6 +195,8 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
 
     let animation = 0;
     let active = true;
+    // The camera the last frame was drawn with, for mapping the pointer onto the world.
+    const camera = { x: 0, y: 0, zoom: 1 };
     const view = { width: world.width, height: world.height, dpr: 1, zoom: 1, userZoom: false };
 
     function zoomBounds() {
@@ -243,6 +254,7 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       event.preventDefault();
       if (keysRef.current.has(event.code)) return;
       keysRef.current.add(event.code);
+      stopRoute();
       // Keep a quick tap until the next frame; browser key repeat never queues extra steps.
       queuedDirectionRef.current = direction;
     }
@@ -258,21 +270,31 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
     // Ask for one step in a direction from the tile the player's accepted
     // steps end on. While a step is in flight this queues the next one to
     // start exactly when it ends; a held key repeats this every step.
-    function requestStep(player: Player, direction: Direction, sprint: boolean, held: boolean) {
+    function requestStep(player: Player, direction: Direction, sprint: boolean, source: StepSource) {
       const [dx, dy] = vectors[direction];
       const from = tail(player);
+      const to = { x: from.x + dx * world.grid.size, y: from.y + dy * world.grid.size };
       const end = player.move ? player.move.startedAt + player.move.durationMs : 0;
       const pending = { id: player.id, fromX: from.x, fromY: from.y, startsAt: end > serverNowRef.current() ? end : null };
+      const route = source === 'route' ? routeRef.current : null;
       pendingRef.current = pending;
-      heldStepRef.current = held && pending.startsAt !== null ? pending.startsAt : null;
+      heldStepRef.current = source === 'held' && pending.startsAt !== null ? pending.startsAt : null;
+      routeStepRef.current = route ? pending.startsAt : null;
       ownFacingRef.current = direction;
       // Animate only an accepted step. Two simultaneous claims cannot visually pass through each other.
-      void onMoveRef.current(from.x + dx * world.grid.size, from.y + dy * world.grid.size, direction, sprint).then((result) => {
+      void onMoveRef.current(to.x, to.y, direction, sprint).then((result) => {
         if (!active || pendingRef.current !== pending || selfIdRef.current !== pending.id) return;
         if (!result.accepted) {
           pendingRef.current = null;
           if (heldStepRef.current === pending.startsAt) heldStepRef.current = null;
-          if (result.reason === 'occupied' || result.reason === 'wall') {
+          if (route) {
+            if (routeStepRef.current === pending.startsAt) routeStepRef.current = null;
+            // A route never bounces. A refused tile sends it a different way.
+            if (routeRef.current !== route) return;
+            if (result.reason === 'disconnected') routeRef.current = null;
+            else if (result.reason !== 'busy' && result.reason !== 'timeout') replan(route, to);
+            retryAtRef.current = performance.now() + retryDelay;
+          } else if (result.reason === 'occupied' || result.reason === 'wall') {
             // A refused queued step bounces once the current step lands.
             const wait = pending.startsAt === null ? 0 : Math.max(0, pending.startsAt - serverNowRef.current());
             bounceRef.current = { id: player.id, direction, startedAt: performance.now() + wait };
@@ -282,6 +304,58 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
           }
         }
       });
+    }
+
+    /** Plan afresh from where the accepted steps end, avoiding a tile the server just refused. */
+    function replan(route: Route, refused: Tile) {
+      const reported = playersRef.current.find((player) => player.id === route.id);
+      const occupied = occupiedTiles(playersRef.current, route.id).add(`${refused.x},${refused.y}`);
+      const path = reported && findRoute(tail(withoutCancelled(reported)), route.destination, occupied);
+      routeRef.current = path && path.length > 1 ? { ...route, path } : null;
+    }
+
+    // The direction of the route's next tile from where the accepted steps
+    // end. A route that has arrived, or no longer leads anywhere, is dropped.
+    function routeDirection(player: Player): Direction | null {
+      const route = routeRef.current;
+      if (!route) return null;
+      const from = tail(player);
+      let index = route.path.findIndex((tile) => tile.x === from.x && tile.y === from.y);
+      if (route.id === player.id && index < 0) {
+        const path = findRoute(from, route.destination, occupiedTiles(playersRef.current, route.id));
+        if (path) {
+          route.path = path;
+          index = 0;
+        }
+      }
+      const next = index >= 0 ? route.path[index + 1] : undefined;
+      if (route.id !== player.id || !next) {
+        routeRef.current = null;
+        return null;
+      }
+      const dx = Math.sign(next.x - from.x);
+      const dy = Math.sign(next.y - from.y);
+      return (Object.keys(vectors) as Direction[]).find((direction) => vectors[direction][0] === dx && vectors[direction][1] === dy) ?? null;
+    }
+
+    // A direction key ends the walk on the tile it is crossing to, withdrawing
+    // a route step queued behind it, and the key takes over from there.
+    function stopRoute() {
+      const queued = routeStepRef.current;
+      routeRef.current = null;
+      routeStepRef.current = null;
+      if (queued !== null && serverNowRef.current() < queued) cancelHeldStep(queued);
+    }
+
+    function onDoubleClick(event: MouseEvent) {
+      const reported = playersRef.current.find((player) => player.id === selfIdRef.current);
+      if (!canvas || !reported || disabledRef.current) return;
+      event.preventDefault();
+      const bounds = canvas.getBoundingClientRect();
+      const target = { x: (event.clientX - bounds.left - camera.x) / camera.zoom, y: (event.clientY - bounds.top - camera.y) / camera.zoom };
+      const path = planWalk(tail(withoutCancelled(reported)), target, occupiedTiles(playersRef.current, reported.id));
+      // A new destination replaces the old one without stopping.
+      routeRef.current = path.length > 1 ? { id: reported.id, destination: path[path.length - 1], path } : null;
     }
 
     function cancelHeldStep(startsAt: number) {
@@ -308,6 +382,7 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       const heldStep = heldStepRef.current;
       if (heldStep !== null && time >= heldStep) heldStepRef.current = null;
       else if (heldStep !== null && (!heldKeys.length || disabledRef.current)) cancelHeldStep(heldStep);
+      if (routeStepRef.current !== null && time >= routeStepRef.current) routeStepRef.current = null;
       const cancel = cancelRef.current;
       if (cancel?.answer && reported && (!cancel.answer.accepted || playersRef.current !== cancel.answer.players) && reported.next?.startedAt !== cancel.startsAt) {
         cancelRef.current = null;
@@ -323,10 +398,13 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
         (!self.move || time >= self.move.startedAt + self.move.durationMs - stepLead)) {
         const held = heldKeys.length ? directions[heldKeys[heldKeys.length - 1]] : null;
         const tapped = queuedDirectionRef.current;
-        const direction = tapped ?? held;
+        const routed = tapped ? null : routeDirection(self);
+        const direction = tapped ?? routed ?? held;
         if (direction) {
           queuedDirectionRef.current = null;
-          requestStep(self, direction, keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight'), !tapped);
+          // Routes walk at the normal pace, even with Shift held.
+          const sprint = !routed && (keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight'));
+          requestStep(self, direction, sprint, tapped ? 'tap' : routed ? 'route' : 'held');
         }
       }
 
@@ -348,12 +426,16 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       ctx.scale(zoom, zoom);
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(background, 0, 0);
+      camera.x = cameraX;
+      camera.y = cameraY;
+      camera.zoom = zoom;
       canvas.dataset.zoom = zoom.toFixed(4);
       canvas.dataset.cameraX = cameraX.toFixed(2);
       canvas.dataset.cameraY = cameraY.toFixed(2);
       canvas.dataset.bounceCount = String(bounceCountRef.current);
       canvas.dataset.bouncing = String(Boolean(bounceRef.current));
       canvas.dataset.moving = String(Boolean(self?.move));
+      canvas.dataset.routing = String(Boolean(routeRef.current));
       canvas.dataset.dancing = String(Boolean(self?.dance));
 
       if (self) {
@@ -426,6 +508,7 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       animation = requestAnimationFrame(render);
     }
 
+    canvas.addEventListener('dblclick', onDoubleClick);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearKeys);
@@ -436,6 +519,7 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       cancelAnimationFrame(animation);
       resizeObserver.disconnect();
       viewport.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('dblclick', onDoubleClick);
       window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
@@ -448,11 +532,11 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
   return (
     <div ref={viewportRef} className="game-world" data-testid="game-world" style={{ position: 'absolute', inset: 0, minHeight: 0, overflow: 'hidden' }}>
       <canvas ref={canvasRef} tabIndex={0} role="img"
-        aria-label="Game area. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Hold Shift to sprint up to three tiles per tick. Press Z to dance or stop dancing; walking stops dancing. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
+        aria-label="Game area. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Double-click a spot to walk there. Hold Shift to sprint up to three tiles per tick. Press Z to dance or stop dancing; walking stops dancing. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
         data-testid="game-canvas" data-player-count={players.length}
         onPointerDown={(event) => event.currentTarget.focus({ preventScroll: true })}
         style={{ display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated', outline: 'none' }}>
-        An interactive game area with three conversation carpets. Use W A S D or arrow keys to move by tiles, hold Shift to sprint, press Z to dance, and scroll to zoom.
+        An interactive game area with three conversation carpets. Use W A S D or arrow keys to move by tiles, double-click to walk to a spot, hold Shift to sprint, press Z to dance, and scroll to zoom.
       </canvas>
     </div>
   );
