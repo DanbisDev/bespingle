@@ -4,7 +4,9 @@ import type { Player } from './world';
 import type { Send, Signal } from './protocol';
 import { createCameraBackground } from './cameraBackground';
 import type { CameraBackground, CameraProcessor } from './cameraBackground';
-import { encodingFor, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
+import { encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
+import { currentLoad, subscribeLoad, watchEncoders } from './deviceLoad';
+import { LoadStepper } from './loadSteps';
 import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
 
 type PeerStatus = 'connecting' | 'connected' | 'disconnected' | 'failed';
@@ -71,10 +73,13 @@ export function usePeerMedia(
   const qualityChoice = useRef(quality);
   qualityChoice.current = quality;
   const [cameraOn, setCameraOn] = useState(false);
-  // Further step-downs requested for device load. Nothing drives it yet.
-  const [loadSteps] = useState(0);
   const participants = self?.carpetId ? players.filter((player) => player.carpetId === self.carpetId).length : 1;
-  const target = useRef<QualityTarget>(qualityTarget({ participants, quality, loadSteps }));
+  // Further step-downs for device load, below what the count alone sets.
+  const [loadSteps, setLoadSteps] = useState(0);
+  const headroom = loadHeadroom({ participants, quality, sharing: !!screenStream });
+  const room = useRef(headroom);
+  room.current = headroom;
+  const target = useRef<QualityTarget>(qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) }));
   const context = useRef({ self, players });
   context.current = { self, players };
   const epoch = useRef(0);
@@ -317,13 +322,27 @@ export function usePeerMedia(
     for (const peer of peers.current.values()) applyQuality(peer);
   }, [applyQuality, reportFailure]);
 
+  // The device-load monitor is shared with the rest of the app. This lends it
+  // the outgoing video senders and turns its level into load steps.
+  useEffect(() => {
+    const stepper = new LoadStepper();
+    const update = () => setLoadSteps(stepper.update(currentLoad(), performance.now(), room.current));
+    const unsubscribe = subscribeLoad(update);
+    const unwatch = watchEncoders(() => [...peers.current.values()].flatMap(({ pc }) => (
+      pc.connectionState === 'connected' ? pc.getTransceivers().slice(1, 3).flatMap(({ sender }) => sender.track ? [sender] : []) : []
+    )));
+    // Holds elapse between level changes, so the stepper also runs on a clock.
+    const timer = setInterval(update, 1000);
+    return () => { clearInterval(timer); unwatch(); unsubscribe(); };
+  }, []);
+
   // Every client sees the same count, so a carpet steps down together.
   useEffect(() => {
-    const next = qualityTarget({ participants, quality, loadSteps });
+    const next = qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) });
     if (JSON.stringify(next) === JSON.stringify(target.current)) return;
     target.current = next;
     for (const peer of peers.current.values()) applyQuality(peer);
-  }, [participants, quality, loadSteps, applyQuality]);
+  }, [participants, quality, loadSteps, headroom, applyQuality]);
 
   const chooseQuality = useCallback((choice: VideoQuality) => {
     qualityChoice.current = choice;

@@ -27,6 +27,19 @@ async function client(name) {
       createOffer(...args) { window.__negotiations += 1; return super.createOffer(...args); }
       createAnswer(...args) { window.__negotiations += 1; return super.createAnswer(...args); }
     };
+    // Count-driven steps are checked at no device load. Six clients on one test
+    // machine do load it, so both load signals are pinned to normal here.
+    // test:load drives them.
+    delete window.PressureObserver;
+    const getStats = RTCRtpSender.prototype.getStats;
+    RTCRtpSender.prototype.getStats = async function (...args) {
+      const report = await getStats.apply(this, args);
+      return new Map([...report].map(([id, row]) => {
+        if (row.type !== 'outbound-rtp' || row.kind !== 'video') return [id, row];
+        const { qualityLimitationDurations: _, ...rest } = row;
+        return [id, { ...rest, qualityLimitationReason: 'none' }];
+      }));
+    };
     navigator.mediaDevices.getDisplayMedia = async () => {
       const canvas = document.createElement('canvas');
       canvas.width = 1280; canvas.height = 720;

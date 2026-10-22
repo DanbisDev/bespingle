@@ -28,7 +28,11 @@ export const ladder: Rung[] = [
   { kind: 'camera', cap: { width: 1280, height: 720, frameRate: 30, maxBitrate: 2_500_000 } },
   { kind: 'camera', cap: { width: 960, height: 540, frameRate: 24, maxBitrate: 1_200_000 } },
   { kind: 'camera', cap: { width: 640, height: 360, frameRate: 15, maxBitrate: 500_000 } },
-  // Background filter rungs (#3) go here, then screen-share rungs (load follow-up).
+  // Background filter rungs (#3) go here.
+  // Screen share is the last resort. Shared text stays legible longest by
+  // giving up frame rate before resolution.
+  { kind: 'screen', cap: { width: 1920, height: 1080, frameRate: 8, maxBitrate: 1_500_000 } },
+  { kind: 'screen', cap: { width: 1280, height: 720, frameRate: 5, maxBitrate: 800_000 } },
 ];
 
 const cameraRungs = ladder.flatMap((rung, index) => rung.kind === 'camera' ? [index] : []);
@@ -36,6 +40,15 @@ const lowestCamera = cameraRungs[cameraRungs.length - 1];
 
 function countRung(participants: number) {
   return participants >= 6 ? cameraRungs[2] : participants >= 4 ? cameraRungs[1] : cameraRungs[0];
+}
+
+// How many load steps can still change something below the starting point.
+// Screen-share rungs count only while sharing, so recovery from load never
+// waits on rungs that changed nothing.
+export function loadHeadroom({ participants, quality, sharing }: Omit<QualityInput, 'loadSteps'> & { sharing: boolean }) {
+  if (quality !== 'auto') return 0;
+  const usable = sharing ? ladder.length : ladder.length - ladder.filter((rung) => rung.kind === 'screen').length;
+  return Math.max(0, usable - 1 - countRung(participants));
 }
 
 export function qualityTarget({ participants, quality, loadSteps }: QualityInput): QualityTarget {
