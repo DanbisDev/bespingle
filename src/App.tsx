@@ -9,7 +9,7 @@ import { AvatarPicker } from './AvatarPicker';
 import { readProfile, saveProfile } from './profile';
 import { useGame } from './useGame';
 import { usePeerMedia } from './usePeerMedia';
-import type { RemoteMedia } from './usePeerMedia';
+import type { NoiseLevel, RemoteMedia } from './usePeerMedia';
 import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 
@@ -88,6 +88,41 @@ function BackgroundChoices({ value, busy, onChange }: { value: CameraBackground;
     <button type="button" className="secondary-button background-upload" aria-pressed={value === 'custom'} onClick={() => upload.current?.click()}>Choose image…{value === 'custom' ? ' ✓' : ''}</button>
     {busy && <p role="status">Preparing camera…</p>}
   </fieldset>;
+}
+
+type NoiseMedia = { noiseLevel: NoiseLevel; standardSupported: boolean; strongSupported: boolean; noiseActive: boolean | undefined; filtering: boolean; levelBusy: boolean };
+
+function NoiseLevels({ media, disabled, onChange }: { media: NoiseMedia; disabled: boolean; onChange: (level: NoiseLevel) => void }) {
+  const levels = [
+    { id: 'off', label: 'Off', detail: 'Your voice is sent without noise suppression.', unavailable: '' },
+    { id: 'standard', label: 'Standard', detail: 'Your browser’s built-in noise suppression.', unavailable: media.strongSupported ? 'Unavailable in this browser. Strong still works, using its filter alone.' : 'Unavailable in this browser.' },
+    { id: 'strong', label: 'Strong', detail: 'Adds a filter for typing, clatter and other steady noise. Uses more processing.', unavailable: 'Unavailable in this browser.' },
+  ] as const;
+  return <fieldset className="noise-levels" disabled={disabled}><legend>Noise level</legend>
+    {levels.map(({ id, label, detail, unavailable }) => {
+      const supported = id === 'off' || (id === 'standard' ? media.standardSupported : media.strongSupported);
+      return <label key={id} className="noise-level"><input type="radio" name="noise-level" value={id} checked={media.noiseLevel === id} disabled={!supported} aria-label={label} aria-describedby={`noise-${id}-note`} onChange={() => onChange(id)} />
+        <span><strong>{label}</strong><small id={`noise-${id}-note`}>{supported ? detail : unavailable}</small></span></label>;
+    })}
+  </fieldset>;
+}
+
+// Reports what is actually applied, which can differ from the choice while a change is
+// pending or in browsers that do not apply built-in suppression to a live microphone.
+function noiseNote(media: NoiseMedia, micOn: boolean) {
+  if (!micOn) return 'Your microphone is off. This choice applies when you turn it on.';
+  if (media.levelBusy) return 'Changing the noise level…';
+  const strong = media.filtering ? 'Strong noise filtering is active' : '';
+  if (!media.standardSupported) {
+    if (strong) return `${strong}. This browser has no built-in suppression, so the filter works alone.`;
+    return 'Noise suppression is off. This browser has no built-in suppression.';
+  }
+  if (media.noiseActive === undefined) return `${strong ? `${strong}. Your` : 'Your'} browser does not report whether its built-in noise suppression is active.`;
+  if (media.noiseActive !== (media.noiseLevel !== 'off')) {
+    return `${strong ? `${strong}, but built-in` : 'Built-in'} noise suppression is currently ${media.noiseActive ? 'on' : 'off'}. Turn your microphone off and on to apply your choice; some browsers require this.`;
+  }
+  if (strong) return `${strong}, on top of built-in noise suppression.`;
+  return media.noiseActive ? 'Standard noise suppression is active.' : 'Noise suppression is off.';
 }
 
 export default function App() {
@@ -205,11 +240,11 @@ export default function App() {
     {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.send({ type: 'profile', name: name.trim(), avatar, customAvatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={avatar} customAvatar={customAvatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required />{picker}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save profile<Icon name="check" /></button></div></form></Dialog>}
 
     {editingMicrophone && connected && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
-      <label className="noise-setting"><input type="checkbox" checked={media.noiseSuppression} disabled={media.busy || !media.noiseSupported} onChange={(event) => { void media.chooseNoiseSuppression(event.target.checked); }} />Noise suppression</label>
-      <p className="media-note" role="status">{!media.noiseSupported ? 'Noise suppression is unavailable in this browser.' : !self.mic ? 'Your microphone is off. This choice applies when you turn it on.' : media.noiseActive === undefined ? 'Your browser does not report whether noise suppression is active.' : media.noiseActive !== media.noiseSuppression ? `Noise suppression is currently ${media.noiseActive ? 'on' : 'off'}. Turn your microphone off and on to apply your choice; some browsers require this.` : media.noiseActive ? 'Noise suppression is active.' : 'Noise suppression is off.'}</p>
+      <NoiseLevels media={media} disabled={media.busy || media.levelBusy} onChange={(level) => { void media.chooseNoiseLevel(level); }} />
+      <p className="media-note" role="status">{noiseNote(media, self.mic)}</p>
       <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your choice lasts until you reload this page.</p>
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
-      <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
+      <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
     {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
