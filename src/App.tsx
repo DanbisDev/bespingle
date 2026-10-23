@@ -9,13 +9,13 @@ import { AvatarPicker } from './AvatarPicker';
 import { readProfile, saveProfile } from './profile';
 import { useGame } from './useGame';
 import { usePeerMedia } from './usePeerMedia';
-import type { RemoteMedia } from './usePeerMedia';
+import type { NoiseLevel, RemoteMedia } from './usePeerMedia';
 import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 import { videoQualities } from './videoQuality';
 import { Whiteboard } from './Whiteboard';
 
-type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
+type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check' | 'more';
 const reactions = [
   { emoji: '👋', label: 'Wave' }, { emoji: '👍', label: 'Thumbs up' },
   { emoji: '❤️', label: 'Love' }, { emoji: '😂', label: 'Laugh' },
@@ -32,6 +32,7 @@ function Icon({ name, off = false }: { name: IconName; off?: boolean }) {
     people: <><circle cx="9" cy="8" r="3" /><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5" /></>,
     exit: <><path d="M10 4H4v16h6m4-13 5 5-5 5m-6-5h11" /></>,
     check: <path d="m5 12 4 4L19 6" />,
+    more: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth="3" />,
   };
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}{off && <path d="m3 3 18 18" strokeWidth="2" />}</svg>;
 }
@@ -92,6 +93,41 @@ function BackgroundChoices({ value, busy, onChange }: { value: CameraBackground;
   </fieldset>;
 }
 
+type NoiseMedia = { noiseLevel: NoiseLevel; standardSupported: boolean; strongSupported: boolean; noiseActive: boolean | undefined; filtering: boolean; levelBusy: boolean };
+
+function NoiseLevels({ media, disabled, onChange }: { media: NoiseMedia; disabled: boolean; onChange: (level: NoiseLevel) => void }) {
+  const levels = [
+    { id: 'off', label: 'Off', detail: 'Your voice is sent without noise suppression.', unavailable: '' },
+    { id: 'standard', label: 'Standard', detail: 'Your browser’s built-in noise suppression.', unavailable: media.strongSupported ? 'Unavailable in this browser. Strong still works, using its filter alone.' : 'Unavailable in this browser.' },
+    { id: 'strong', label: 'Strong', detail: 'Adds a filter for typing, clatter and other steady noise. Uses more processing.', unavailable: 'Unavailable in this browser.' },
+  ] as const;
+  return <fieldset className="noise-levels" disabled={disabled}><legend>Noise level</legend>
+    {levels.map(({ id, label, detail, unavailable }) => {
+      const supported = id === 'off' || (id === 'standard' ? media.standardSupported : media.strongSupported);
+      return <label key={id} className="noise-level"><input type="radio" name="noise-level" value={id} checked={media.noiseLevel === id} disabled={!supported} aria-label={label} aria-describedby={`noise-${id}-note`} onChange={() => onChange(id)} />
+        <span><strong>{label}</strong><small id={`noise-${id}-note`}>{supported ? detail : unavailable}</small></span></label>;
+    })}
+  </fieldset>;
+}
+
+// Reports what is actually applied, which can differ from the choice while a change is
+// pending or in browsers that do not apply built-in suppression to a live microphone.
+function noiseNote(media: NoiseMedia, micOn: boolean) {
+  if (!micOn) return 'Your microphone is off. This choice applies when you turn it on.';
+  if (media.levelBusy) return 'Changing the noise level…';
+  const strong = media.filtering ? 'Strong noise filtering is active' : '';
+  if (!media.standardSupported) {
+    if (strong) return `${strong}. This browser has no built-in suppression, so the filter works alone.`;
+    return 'Noise suppression is off. This browser has no built-in suppression.';
+  }
+  if (media.noiseActive === undefined) return `${strong ? `${strong}. Your` : 'Your'} browser does not report whether its built-in noise suppression is active.`;
+  if (media.noiseActive !== (media.noiseLevel !== 'off')) {
+    return `${strong ? `${strong}, but built-in` : 'Built-in'} noise suppression is currently ${media.noiseActive ? 'on' : 'off'}. Turn your microphone off and on to apply your choice; some browsers require this.`;
+  }
+  if (strong) return `${strong}, on top of built-in noise suppression.`;
+  return media.noiseActive ? 'Standard noise suppression is active.' : 'Noise suppression is off.';
+}
+
 export default function App() {
   const game = useGame();
   const self = game.players.find((player) => player.id === game.selfId);
@@ -107,6 +143,7 @@ export default function App() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [editingBackground, setEditingBackground] = useState(false);
   const [editingMicrophone, setEditingMicrophone] = useState(false);
+  const [editingVideo, setEditingVideo] = useState(false);
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -154,7 +191,7 @@ export default function App() {
   }, [media.whiteboardActive]);
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
-  const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
+  const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || editingVideo || isMediaPrompt;
   const settingsOpen = editingMicrophone && connected && !!self;
   const backgroundOpen = editingBackground && connected && !!self;
 
@@ -171,7 +208,7 @@ export default function App() {
     if (deviceDialogClosed) clearMediaError();
   }, [settingsOpen, backgroundOpen, isMediaPrompt, deviceDialogClosed, clearMediaError]);
 
-  const bannerError = connected ? game.serverError || (!isMediaPrompt && !editingBackground && !editingMicrophone && !deviceDialogClosed ? media.error : '') : '';
+  const bannerError = connected ? game.serverError || (!isMediaPrompt && !editingBackground && !editingMicrophone && !editingVideo && !deviceDialogClosed ? media.error : '') : '';
   const dismissBanner = () => { if (game.serverError) game.clearServerError(); else clearMediaError(); };
 
   return <div className="app-shell">
@@ -205,9 +242,14 @@ export default function App() {
       </div>
       <footer className="game-hud">
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
-        <div className="media-controls"><button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, media.cameraOn); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
-          <button className="device-button" disabled={!connected || media.busy || isMediaPrompt} aria-label="Audio and video settings" onClick={() => setEditingMicrophone(true)}><Icon name="mic" /><span>Settings</span></button>
-          <button className={media.cameraOn ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={media.cameraOn ? 'Turn camera off' : 'Turn camera on'} aria-pressed={media.cameraOn} onClick={() => { void media.chooseMedia(self?.mic ?? false, !media.cameraOn); }}><Icon name="camera" off={!media.cameraOn} /><span>{media.cameraOn ? media.quality === 'audio' ? 'Camera paused' : 'Camera on' : 'Camera off'}</span></button>
+        <div className="media-controls"><div className={`device-group ${self?.mic ? 'enabled' : ''}`} role="group" aria-label="Microphone">
+            <button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, media.cameraOn); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
+            <button className={`device-button device-more ${self?.mic ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Microphone settings" aria-haspopup="dialog" title="Microphone settings" onClick={() => setEditingMicrophone(true)}><Icon name="more" /></button>
+          </div>
+          <div className={`device-group ${media.cameraOn ? 'enabled' : ''}`} role="group" aria-label="Camera">
+            <button className={media.cameraOn ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={media.cameraOn ? 'Turn camera off' : 'Turn camera on'} aria-pressed={media.cameraOn} onClick={() => { void media.chooseMedia(self?.mic ?? false, !media.cameraOn); }}><Icon name="camera" off={!media.cameraOn} /><span>{media.cameraOn ? media.quality === 'audio' ? 'Camera paused' : 'Camera on' : 'Camera off'}</span></button>
+            <button className={`device-button device-more ${media.cameraOn ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Video settings" aria-haspopup="dialog" title="Video settings" onClick={() => setEditingVideo(true)}><Icon name="more" /></button>
+          </div>
           <button className={`device-button ${media.background !== 'none' ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Camera background" onClick={() => setEditingBackground(true)}><Icon name="camera" /><span>Background</span></button>
           <button className={`device-button ${media.screenStream && !media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || media.whiteboardActive || isMediaPrompt} aria-label={media.screenStream && !media.whiteboardActive ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream && !media.whiteboardActive} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream && !media.whiteboardActive ? 'Stop sharing' : 'Share screen'}</span></button>
           <button className={`device-button ${media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || (!!media.screenStream && !media.whiteboardActive) || isMediaPrompt} aria-label={media.whiteboardActive ? 'Close whiteboard' : 'Open whiteboard'} aria-pressed={media.whiteboardActive} title={carpet ? 'Draw on a shared whiteboard' : 'Walk onto a carpet to use the whiteboard'} onClick={() => { if (media.whiteboardActive) { media.stopScreen(); } else { setWhiteboardOpen(true); } }}><Icon name="screen" /><span>{media.whiteboardActive ? 'Close board' : 'Whiteboard'}</span></button>
@@ -232,16 +274,21 @@ export default function App() {
 
     {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.send({ type: 'profile', name: name.trim(), avatar, customAvatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={avatar} customAvatar={customAvatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required />{picker}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save profile<Icon name="check" /></button></div></form></Dialog>}
 
-    {settingsOpen && self && <Dialog title="Audio and video settings" description="Reduce background noise so others can hear your voice more clearly, and choose how much video you send.">
-      <label className="noise-setting"><input type="checkbox" checked={media.noiseSuppression} disabled={media.busy || !media.noiseSupported} onChange={(event) => { void media.chooseNoiseSuppression(event.target.checked); }} />Noise suppression</label>
-      <p className="media-note" role="status">{!media.noiseSupported ? 'Noise suppression is unavailable in this browser.' : !self.mic ? 'Your microphone is off. This choice applies when you turn it on.' : media.noiseActive === undefined ? 'Your browser does not report whether noise suppression is active.' : media.noiseActive !== media.noiseSuppression ? `Noise suppression is currently ${media.noiseActive ? 'on' : 'off'}. Turn your microphone off and on to apply your choice; some browsers require this.` : media.noiseActive ? 'Noise suppression is active.' : 'Noise suppression is off.'}</p>
+    {settingsOpen && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
+      <NoiseLevels media={media} disabled={media.busy || media.levelBusy} onChange={(level) => { void media.chooseNoiseLevel(level); }} />
+      <p className="media-note" role="status">{noiseNote(media, self.mic)}</p>
       <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice lasts until you reload this page.</p>
+      {media.error && <p className="form-error" role="alert">{media.error}</p>}
+      <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
+    </Dialog>}
+
+    {editingVideo && connected && self && <Dialog title="Video settings" description="Choose how much video you send.">
       <fieldset className="quality-settings"><legend>Video quality</legend>
         {videoQualities.map(({ id, label, detail }) => <label key={id} className="quality-choice"><input type="radio" name="video-quality" value={id} aria-label={label} aria-describedby={`quality-${id}`} checked={media.quality === id} onChange={() => media.chooseQuality(id)} /><span><strong>{label}</strong><small id={`quality-${id}`}>{detail}</small></span></label>)}
       </fieldset>
       <p className="media-note">{media.quality === 'audio' ? 'Your camera keeps running on your device but is not sent, so others see your avatar. Audio and screen sharing continue.' : 'Your video quality choice is remembered in this browser.'}</p>
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
-      <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
+      <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingVideo(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
     {backgroundOpen && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
