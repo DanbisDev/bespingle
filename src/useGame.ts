@@ -56,7 +56,7 @@ export function useGame() {
     ws.send(JSON.stringify({ ...message, requestId }));
   }), []);
 
-  const move: Move = useCallback((x, y, facing, sprint = false) => requestMove({ type: 'move', x, y, facing, sprint }), [requestMove]);
+  const move: Move = useCallback((x, y, facing, sprint = false, portal = false) => requestMove({ type: 'move', x, y, facing, sprint, portal }), [requestMove]);
   const cancelMove: CancelMove = useCallback(() => requestMove({ type: 'move-cancel' }), [requestMove]);
 
   const leave = useCallback(() => {
