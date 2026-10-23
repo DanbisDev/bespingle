@@ -221,7 +221,124 @@ try {
     assert.equal(failures.mic, 'live');
     console.log(`PASS: ${label} reports failures once (closed context, processor error, worklet error, ended source, stuck suspension), recovers a brief suspension, rejects corrupt, cancelled and never-running startups, and never stops the microphone`);
 
+    // A filter started bypassed keeps the startup handshake and failure reporting, and can be switched on in place.
+    const bypass = await page.evaluate(async (module) => {
+      const { createNoiseFilter } = await import(module);
+      const mic = (await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks()[0];
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const stats = (node) => new Promise((resolve) => {
+        const listener = ({ data }) => { if (data.type === 'stats') { node.port.removeEventListener('message', listener); resolve(data); } };
+        node.port.addEventListener('message', listener); node.port.postMessage({ type: 'stats' });
+      });
+      const results = {};
+      let failures = [];
+      let filter = await createNoiseFilter(mic, (message) => failures.push(message), undefined, { bypassed: true });
+      let node = window.__nodes.at(-1);
+      const track = filter.track;
+      await settle(500); results.startBypassed = await stats(node);
+      filter.setBypassed(false); await settle(500); results.switchedOn = await stats(node);
+      filter.setBypassed(true); await settle(100); const before = await stats(node); await settle(500); const after = await stats(node);
+      results.switchedOff = { ...after, ranWhileBypassed: after.denoised - before.denoised };
+      results.sameTrack = filter.track === track; results.state = track.readyState;
+      node.dispatchEvent(new Event('processorerror')); node.dispatchEvent(new Event('processorerror')); await settle();
+      results.failures = failures; results.ended = track.readyState;
+      filter.setBypassed(false); // A stopped filter ignores the control.
+      results.rejected = 'resolved';
+      try { await createNoiseFilter(mic, () => {}, AbortSignal.abort(), { bypassed: true }); } catch (error) { results.rejected = error.message; }
+      results.mic = mic.readyState; mic.stop();
+      return results;
+    }, module);
+    assert.equal(bypass.startBypassed.bypassed, true);
+    assert.equal(bypass.startBypassed.denoised, 0, `A filter started bypassed never runs RNNoise: ${JSON.stringify(bypass)}`);
+    assert.equal(bypass.switchedOn.bypassed, false);
+    assert(bypass.switchedOn.denoised >= 30, `Switching on runs RNNoise on the same filter: ${JSON.stringify(bypass)}`);
+    assert.equal(bypass.switchedOff.bypassed, true);
+    assert.equal(bypass.switchedOff.ranWhileBypassed, 0, `Bypassing stops RNNoise: ${JSON.stringify(bypass)}`);
+    assert(bypass.sameTrack); assert.equal(bypass.state, 'live');
+    assert.equal(bypass.failures.length, 1, `A bypassed filter reports failure exactly once: ${JSON.stringify(bypass.failures)}`);
+    assert.equal(bypass.ended, 'ended');
+    assert.match(bypass.rejected, /cancelled/); assert.equal(bypass.mic, 'live');
+    console.log(`PASS: ${label} starts a filter bypassed without running RNNoise, switches it on and off in place on one live track, and still reports failure once`);
+
     if (label === 'production build') {
+      {
+      // Bypassing mid-stream passes the noise through untouched, on time and without a gap, and resuming filters it again.
+      const switched = await page.evaluate(async ({ module, samples }) => {
+        const { createNoiseFilter } = await import(module);
+        const bytes = Uint8Array.from(atob(samples), (c) => c.charCodeAt(0));
+        const input = new Float32Array(bytes.buffer);
+        const context = new AudioContext({ sampleRate: 48000 });
+        const buffer = context.createBuffer(1, input.length, 48000); buffer.copyToChannel(input, 0);
+        const player = context.createBufferSource(); player.buffer = buffer;
+        const line = context.createMediaStreamDestination(); line.channelCount = 1; player.connect(line);
+        const source = line.stream.getAudioTracks()[0];
+        const filter = await createNoiseFilter(source, () => {});
+        const track = filter.track;
+        const merge = context.createChannelMerger(2);
+        context.createMediaStreamSource(new MediaStream([source])).connect(merge, 0, 0);
+        context.createMediaStreamSource(new MediaStream([filter.track])).connect(merge, 0, 1);
+        const recorder = context.createScriptProcessor(4096, 2, 1);
+        const raw = []; const filtered = [];
+        recorder.onaudioprocess = ({ inputBuffer }) => { raw.push(inputBuffer.getChannelData(0).slice()); filtered.push(inputBuffer.getChannelData(1).slice()); };
+        const mute = context.createGain(); mute.gain.value = 0;
+        merge.connect(recorder).connect(mute).connect(context.destination);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        raw.length = 0; filtered.length = 0;
+        player.start();
+        const started = performance.now();
+        const at = (seconds, action) => new Promise((resolve) => setTimeout(() => { action(); resolve(); }, seconds * 1000 - (performance.now() - started)));
+        // Bypassed over most of the typing and the kitchen clatter, filtering everywhere else.
+        await at(3.5, () => filter.setBypassed(true));
+        await at(6.5, () => filter.setBypassed(false));
+        await at(10.5, () => filter.setBypassed(true));
+        await at(13.5, () => filter.setBypassed(false));
+        await new Promise((resolve) => { player.onended = resolve; });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const result = { sameTrack: filter.track === track, state: track.readyState };
+        filter.stop(); await context.close();
+        const join = (chunks) => { const all = new Float32Array(chunks.reduce((n, chunk) => n + chunk.length, 0)); let at = 0; for (const chunk of chunks) { all.set(chunk, at); at += chunk.length; } return all; };
+        const encode = (array) => { const view = new Uint8Array(array.buffer); let text = ''; for (let i = 0; i < view.length; i += 0x8000) text += String.fromCharCode(...view.subarray(i, i + 0x8000)); return btoa(text); };
+        return { ...result, raw: encode(join(raw)), filtered: encode(join(filtered)) };
+      }, { module, samples: toBase64(signal) });
+      assert(switched.sameTrack); assert.equal(switched.state, 'live');
+      const raw = fromBase64(switched.raw); const filtered = fromBase64(switched.filtered);
+      const rawStart = lag(frames(signal), frames(raw), 100);
+      // Delay to the sample, so a bypass that skipped or repeated audio would show.
+      const exactLag = (from, to, around) => {
+        let best = 0; let bestScore = -Infinity;
+        for (let shift = Math.max(0, around - 960); shift <= around + 960; shift++) {
+          let score = 0; for (let i = from; i < to; i++) score += raw[i] * filtered[i + shift];
+          if (score > bestScore) { bestScore = score; best = shift; }
+        }
+        return best;
+      };
+      const coarse = lag(frames(raw.subarray(rawStart, rawStart + 3 * RATE)), frames(filtered.subarray(rawStart, rawStart + 3 * RATE)), 10);
+      const window = (from, to) => [rawStart + Math.round(from * RATE), rawStart + Math.round(to * RATE)];
+      const filterDelay = exactLag(...window(1, 2.5), coarse);
+      const bypassDelays = [[4.2, 6], [11.2, 13]].map((range) => exactLag(...window(...range), coarse));
+      const residual = ([from, to], delay) => { let error = 0; let total = 0; for (let i = from; i < to; i++) { error += (filtered[i + delay] - raw[i]) ** 2; total += raw[i] ** 2; } return decibels(error / total); };
+      // Audio crossing between the filter's context and this one can slip a few samples now and then,
+      // so the bypassed stretches are judged in quarter seconds.
+      const blocks = [[4.25, 6], [11.25, 13]].flatMap(([from, to], n) => Array.from({ length: (to - from) * 4 }, (_, k) => residual(window(from + k / 4, from + (k + 1) / 4), bypassDelays[n])));
+      const passthrough = blocks.filter((value) => value < -30).length / blocks.length;
+      const change = (from, to) => { const [a, b] = window(from, to); return decibels(energy(filtered, a + filterDelay, b + filterDelay) / energy(raw, a, b)); };
+      const resumed = { keyboard: change(3.1, 3.4), kitchen: change(10.1, 10.4), mixed: change(14.2, 15.8) };
+      // No step at a switch: the output never jumps further between samples than the input does nearby.
+      let worst = 0;
+      for (const [i0, end] of [3.5, 6.5, 10.5, 13.5].map((at) => window(at - 0.25, at + 0.35))) for (let i = i0; i < end; i += 480) {
+        let out = 0; let input = 0;
+        for (let j = i; j < i + 480; j++) out = Math.max(out, Math.abs(filtered[j + filterDelay] - filtered[j + filterDelay - 1]));
+        for (let j = i - 2400; j < i + 2880; j++) input = Math.max(input, Math.abs(raw[j] - raw[j - 1]));
+        worst = Math.max(worst, out / Math.max(input, 1e-3));
+      }
+      console.log(`MEASURED: filtered delay ${filterDelay} samples, bypassed delay ${bypassDelays.join(' and ')}; ${(passthrough * 100).toFixed(0)}% of bypassed quarter seconds match the microphone to within 30 dB (median ${blocks.sort((a, b) => a - b)[blocks.length >> 1].toFixed(1)} dB); filtering before and after the bypasses changes typing by ${resumed.keyboard.toFixed(1)} dB, kitchen ${resumed.kitchen.toFixed(1)} dB, voice with typing ${resumed.mixed.toFixed(1)} dB; largest sample step ${worst.toFixed(2)}× the input's`);
+      for (const delay of bypassDelays) assert(Math.abs(delay - filterDelay) <= 2, `Bypassed audio keeps the filtered delay, so switching neither skips nor repeats audio (${delay} vs ${filterDelay})`);
+      assert(passthrough >= 0.75, `Bypassed audio is the microphone audio (${(passthrough * 100).toFixed(0)}% of blocks)`);
+      assert(resumed.kitchen <= -10, `Filtering resumes after a bypass (${resumed.kitchen.toFixed(1)} dB)`);
+      assert(worst < 1.3, `No click when switching (${worst.toFixed(2)})`);
+      console.log(`PASS: ${label} bypasses RNNoise mid-stream with the microphone audio passed through on time and without a click, and resumes filtering on the same track`);
+      }
+
       // Noise-only stretches are attenuated while voiced stretches keep their energy.
       const recorded = await page.evaluate(async ({ module, samples }) => {
         const { createNoiseFilter } = await import(module);
@@ -289,8 +406,11 @@ try {
       }, module);
       await page.waitForTimeout(1000);
       const filteredCpu = await sample(10);
+      await page.evaluate(() => window.__filter.setBypassed(true));
+      await page.waitForTimeout(1000);
+      const bypassedCpu = await sample(10);
       await page.evaluate(() => { window.__filter.stop(); window.__mic.stop(); });
-      console.log(`MEASURED: browser CPU (all processes) ${plain.toFixed(1)}% of one core with a pass-through graph, ${filteredCpu.toFixed(1)}% with the filter; filter cost ≈ ${(filteredCpu - plain).toFixed(1)}% of one core`);
+      console.log(`MEASURED: browser CPU (all processes) ${plain.toFixed(1)}% of one core with a pass-through graph, ${filteredCpu.toFixed(1)}% with the filter, ${bypassedCpu.toFixed(1)}% with it bypassed; filter cost ≈ ${(filteredCpu - plain).toFixed(1)}% of one core, ${(bypassedCpu - plain).toFixed(1)}% bypassed`);
     }
 
     assert.deepEqual(foreign, [], 'Nothing is fetched from another host');

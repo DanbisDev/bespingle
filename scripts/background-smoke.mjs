@@ -104,3 +104,4 @@ try {
   assert(await page.evaluate(() => window.__captures.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))), 'Leaving releases capture');
   console.log('Camera backgrounds passed: real MediaPipe inference, presets, custom images, live switching, camera reuse, processed peer video, startup/runtime failures, and cleanup.');
 } finally { await browser.close(); }
+await import('./background-rungs-smoke.mjs');
