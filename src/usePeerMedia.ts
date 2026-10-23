@@ -10,6 +10,7 @@ import { LoadStepper } from './loadSteps';
 import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
 import { createNoiseFilter, noiseFilterSupported } from './noiseFilter';
 import type { NoiseFilter } from './noiseFilter';
+import { readBackground, readBackgroundImage, readNoiseLevel, saveBackground, saveBackgroundImage, saveNoiseLevel } from './mediaChoices';
 
 // Off sends the microphone untouched, Standard uses the browser's built-in noise
 // suppression, and Strong adds the RNNoise filter on top of it.
@@ -73,8 +74,12 @@ export function usePeerMedia(
   const capture = useRef<MediaStream | null>(null);
   const standardSupported = !!navigator.mediaDevices?.getSupportedConstraints().noiseSuppression;
   const strongSupported = noiseFilterSupported();
-  // Each visit starts at Strong where the browser can run the filter, and is not remembered.
-  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>(strongSupported ? 'strong' : 'standard');
+  // The remembered level, else Strong where the browser can run the filter. A remembered Strong
+  // the browser cannot run starts at Standard, as the default does.
+  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>(() => {
+    const remembered = readNoiseLevel() ?? 'strong';
+    return remembered === 'strong' && !strongSupported ? 'standard' : remembered;
+  });
   const levelChoice = useRef<NoiseLevel>(noiseLevel);
   const levelRequest = useRef(0);
   const [levelBusy, setLevelBusy] = useState(false);
@@ -83,9 +88,22 @@ export function usePeerMedia(
   const filter = useRef<ActiveFilter | null>(null);
   const filterStarting = useRef<AbortController | null>(null);
   const processor = useRef<CameraProcessor | null>(null);
-  const [background, setBackground] = useState<CameraBackground>('none');
-  const backgroundChoice = useRef<CameraBackground>('none');
+  const [background, setBackground] = useState<CameraBackground>(readBackground);
+  const backgroundChoice = useRef<CameraBackground>(background);
   const backgroundImage = useRef<File | undefined>(undefined);
+  // A remembered custom background needs its image read back from storage first. If it cannot
+  // be, the background becomes Blur, so the person's surroundings stay hidden.
+  const imageRestore = useRef<Promise<void> | null>(null);
+  const restoreImage = useCallback(() => {
+    imageRestore.current ??= backgroundChoice.current !== 'custom' ? Promise.resolve() : readBackgroundImage().then(
+      (image) => { backgroundImage.current ??= image; },
+      () => {
+        if (backgroundChoice.current !== 'custom' || backgroundImage.current) return;
+        backgroundChoice.current = 'blur'; setBackground('blur');
+      });
+    return imageRestore.current;
+  }, []);
+  useEffect(() => { void restoreImage(); }, [restoreImage]);
   const processing = useRef<AbortController | null>(null);
   const [quality, setQuality] = useState<VideoQuality>(readVideoQuality);
   const qualityChoice = useRef(quality);
@@ -546,6 +564,11 @@ export function usePeerMedia(
       }
 
       const cameraTrack = acquired?.getVideoTracks()[0];
+      // A camera enabled before the remembered image is read back waits for it.
+      if (cameraTrack && backgroundChoice.current === 'custom' && !backgroundImage.current) {
+        await restoreImage();
+        if (!isCurrent()) { acquired?.getTracks().forEach((track) => track.stop()); return false; }
+      }
       if (cameraTrack && backgroundChoice.current !== 'none') {
         const controller = new AbortController(); processing.current = controller;
         const next = await createCameraBackground(cameraTrack, backgroundChoice.current, (message) => {
@@ -589,14 +612,17 @@ export function usePeerMedia(
     } finally {
       if (isCurrent()) setBusy(false);
     }
-  }, [publishCapture, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
+  }, [publishCapture, restoreImage, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
 
   // The one way to change the noise level: the settings dialog uses it, and so can the app at
   // runtime, without a user gesture (#3 steps Strong down under device load through here).
   // With the microphone off it only records the choice. With it on, built-in suppression is
   // toggled on the live capture track and each sender's track is replaced in place, so nothing
   // is recaptured or renegotiated. Resolves to the level in effect afterwards.
-  const chooseNoiseLevel = useCallback(async function choose(level: NoiseLevel): Promise<NoiseLevel> {
+  // A level that is recorded or applied is remembered for later visits unless `remember` is false,
+  // which a runtime change should pass. A Strong that falls back to Standard is remembered as Strong,
+  // so a filter that failed once is tried again next visit.
+  const chooseNoiseLevel = useCallback(async function choose(level: NoiseLevel, remember = true): Promise<NoiseLevel> {
     if (level === 'strong' && !strongSupported) return levelChoice.current;
     const generation = epoch.current;
     const requestId = ++levelRequest.current;
@@ -604,6 +630,7 @@ export function usePeerMedia(
     if (!track) {
       // As the latest request, this also clears a busy state left by a change it overtook.
       levelChoice.current = level; setNoiseLevel(level); setLevelBusy(false);
+      if (remember) saveNoiseLevel(level);
       return level;
     }
     filterStarting.current?.abort();
@@ -612,7 +639,7 @@ export function usePeerMedia(
     const isCurrent = () => isLatest() && !!capture.current?.getAudioTracks().includes(track) && track.readyState === 'live';
     // A change overtaken only by the microphone still stands: it is recorded with the microphone
     // off, or applied to the microphone that replaced this one.
-    const stale = () => isLatest() ? choose(level) : levelChoice.current;
+    const stale = () => isLatest() ? choose(level, remember) : levelChoice.current;
     setLevelBusy(true); setError('');
     let next: ActiveFilter | null = null;
     try {
@@ -632,6 +659,7 @@ export function usePeerMedia(
       const effective: NoiseLevel = level === 'strong' && !next ? 'standard' : level;
       filter.current = next;
       levelChoice.current = effective; setNoiseLevel(effective);
+      if (remember) saveNoiseLevel(level);
       publishCapture(capture.current);
       await syncSenders();
       if (previous !== next) previous?.stop();
@@ -671,6 +699,8 @@ export function usePeerMedia(
       const previous = processor.current;
       processor.current = next;
       backgroundChoice.current = choice; setBackground(choice);
+      saveBackground(choice);
+      if (image) void saveBackgroundImage(image);
       publishCapture(capture.current);
       await syncSenders();
       previous?.stop();

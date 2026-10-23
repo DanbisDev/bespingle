@@ -284,7 +284,7 @@ export default function App() {
     {settingsOpen && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
       <NoiseLevels media={media} disabled={media.busy || media.levelBusy} onChange={(level) => { void media.chooseNoiseLevel(level); }} />
       <p className="media-note" role="status">{noiseNote(media, self.mic)}</p>
-      <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice lasts until you reload this page.</p>
+      <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice is remembered in this browser.</p>
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
