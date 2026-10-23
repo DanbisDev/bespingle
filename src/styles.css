@@ -74,7 +74,8 @@ h1, h2, p { margin: 0; }
 .video-avatar { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 105%, #435571 0%, #243147 70%); }
 .video-tile video { height: 100%; width: 100%; object-fit: cover; position: absolute; inset: 0; opacity: 0; }
 .video-tile.has-video video { opacity: 1; }
-.video-tile:has(video[muted]) video { transform: scaleX(-1); }
+/* Only your own camera tile is mirrored, and only when you choose it. */
+.video-tile.is-mirrored video { transform: scaleX(-1); }
 .video-caption { position: absolute; bottom: 0; left: 0; right: 0; padding: 16px 7px 5px; background: linear-gradient(transparent, #07101de0); color: #f2f6fc; display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 9px; z-index: 1; }
 .video-caption span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .video-caption small { font-size: inherit; opacity: .75; }
@@ -284,7 +285,8 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .background-forest > span { background: linear-gradient(135deg, #173c39, #708c66); }
 .background-settings > p { margin-top: 12px; color: #c0cbdc; font-size: 12px; }
 .background-preview .video-tile { width: 100%; height: 205px; margin-top: 20px; }
-.background-preview .select-video { display: none; }
+.background-preview .select-video, .self-view-preview .select-video { display: none; }
+.self-view-preview .video-tile { width: 100%; height: 205px; margin-top: 20px; }
 
 .background-upload { margin-top: 12px; width: 100%; }
 
