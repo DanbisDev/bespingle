@@ -8,6 +8,16 @@ import { encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQu
 import { currentLoad, subscribeLoad, watchEncoders } from './deviceLoad';
 import { LoadStepper } from './loadSteps';
 import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
+import { createNoiseFilter, noiseFilterSupported } from './noiseFilter';
+import type { NoiseFilter } from './noiseFilter';
+
+// Off sends the microphone untouched, Standard uses the browser's built-in noise
+// suppression, and Strong adds the RNNoise filter on top of it.
+export type NoiseLevel = 'off' | 'standard' | 'strong';
+type ActiveFilter = NoiseFilter & { source: MediaStreamTrack };
+
+// A track with no built-in suppression to switch, such as one not from a device, rejects the constraint outright.
+const canSuppress = (track: MediaStreamTrack) => !track.getCapabilities || !!track.getCapabilities().noiseSuppression?.includes(true);
 
 type PeerStatus = 'connecting' | 'connected' | 'disconnected' | 'failed';
 export type RemoteMedia = { stream: MediaStream; screenStream: MediaStream; status: PeerStatus };
@@ -60,10 +70,17 @@ export function usePeerMedia(
   const peers = useRef(new Map<string, Peer>());
   const local = useRef<MediaStream | null>(null);
   const capture = useRef<MediaStream | null>(null);
-  const [noiseSuppression, setNoiseSuppression] = useState(true);
-  const noiseChoice = useRef(true);
-  const noiseSupported = !!navigator.mediaDevices?.getSupportedConstraints().noiseSuppression;
+  const standardSupported = !!navigator.mediaDevices?.getSupportedConstraints().noiseSuppression;
+  const strongSupported = noiseFilterSupported();
+  // Each visit starts at Strong where the browser can run the filter, and is not remembered.
+  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>(strongSupported ? 'strong' : 'standard');
+  const levelChoice = useRef<NoiseLevel>(noiseLevel);
+  const levelRequest = useRef(0);
+  const [levelBusy, setLevelBusy] = useState(false);
   const [noiseActive, setNoiseActive] = useState<boolean | undefined>(undefined);
+  const [filtering, setFiltering] = useState(false);
+  const filter = useRef<ActiveFilter | null>(null);
+  const filterStarting = useRef<AbortController | null>(null);
   const processor = useRef<CameraProcessor | null>(null);
   const [background, setBackground] = useState<CameraBackground>('none');
   const backgroundChoice = useRef<CameraBackground>('none');
@@ -87,16 +104,23 @@ export function usePeerMedia(
   const activeCarpet = self?.carpetId ?? '';
   const activeSelf = self?.id ?? '';
 
+  const stopFilter = useCallback(() => {
+    filterStarting.current?.abort(); filterStarting.current = null;
+    filter.current?.stop(); filter.current = null;
+  }, []);
+
   const stopCapture = useCallback(() => {
     processing.current?.abort(); processing.current = null;
     processor.current?.stop(); processor.current = null;
+    stopFilter();
     capture.current?.getTracks().forEach((track) => track.stop()); capture.current = null;
     local.current?.getTracks().forEach((track) => track.stop());
     local.current = null;
     setLocalStream(null);
     setCameraOn(false);
     setNoiseActive(undefined);
-  }, []);
+    setFiltering(false);
+  }, [stopFilter]);
 
   const removePeer = useCallback((id: string) => {
     const peer = peers.current.get(id);
@@ -230,20 +254,24 @@ export function usePeerMedia(
   useLayoutEffect(() => {
     epoch.current += 1;
     request.current += 1;
+    levelRequest.current += 1;
     stopCapture();
+    setLevelBusy(false);
     setHasChosenDevices(false);
     setError('');
     setBusy(false);
     return () => {
       epoch.current += 1;
       request.current += 1;
+      levelRequest.current += 1;
       processing.current?.abort(); processing.current = null;
       processor.current?.stop(); processor.current = null;
+      stopFilter();
       capture.current?.getTracks().forEach((track) => track.stop()); capture.current = null;
       local.current?.getTracks().forEach((track) => track.stop());
       local.current = null;
     };
-  }, [activeSelf, stopCapture]);
+  }, [activeSelf, stopCapture, stopFilter]);
 
   // Only peer connections belong to a carpet. No media is sent on the open floor.
   useLayoutEffect(() => {
@@ -296,8 +324,12 @@ export function usePeerMedia(
 
   const publishCapture = useCallback((raw: MediaStream | null) => {
     capture.current = raw;
-    setNoiseActive(raw?.getAudioTracks().find((track) => track.readyState === 'live')?.getSettings().noiseSuppression);
-    const tracks = raw?.getTracks().map((track) => track.kind === 'video' && processor.current ? processor.current.track : track) ?? [];
+    const microphone = raw?.getAudioTracks().find((track) => track.readyState === 'live');
+    // Built-in suppression is read from the capture track; the filter's output reports nothing.
+    setNoiseActive(microphone?.getSettings().noiseSuppression);
+    const filtered = filter.current && filter.current.source === microphone ? filter.current.track : null;
+    setFiltering(!!filtered);
+    const tracks = raw?.getTracks().map((track) => track.kind === 'video' && processor.current ? processor.current.track : track === microphone && filtered ? filtered : track) ?? [];
     const stream = tracks.length ? new MediaStream(tracks) : null;
     local.current = stream;
     setLocalStream(stream);
@@ -350,6 +382,31 @@ export function usePeerMedia(
     saveVideoQuality(choice);
     publishStatus();
   }, [publishStatus]);
+
+  const strongStopped = useCallback((message: string) => (
+    `Strong noise filtering stopped. ${message} ${standardSupported ? 'Your microphone is using Standard noise suppression.' : 'Your microphone is being sent without noise suppression.'}`
+  ), [standardSupported]);
+
+  // Starts Strong on a live microphone track. Unlike a failed camera effect, which stops the
+  // camera, a failed filter republishes the raw track at Standard so the participant stays audible.
+  const startFilter = useCallback(async (source: MediaStreamTrack): Promise<ActiveFilter> => {
+    const controller = new AbortController(); filterStarting.current = controller;
+    let active: ActiveFilter | null = null;
+    try {
+      const started = await createNoiseFilter(source, (message) => {
+        if (!active || filter.current !== active) return;
+        filter.current = null;
+        publishCapture(capture.current);
+        void syncSenders();
+        // A microphone that ended took the filter with it; there is nothing to fall back to.
+        if (source.readyState !== 'live') return;
+        levelChoice.current = 'standard'; setNoiseLevel('standard');
+        setError(strongStopped(message));
+      }, controller.signal);
+      active = { ...started, source };
+      return active;
+    } finally { if (filterStarting.current === controller) filterStarting.current = null; }
+  }, [publishCapture, strongStopped, syncSenders]);
 
   const [whiteboardActive, setWhiteboardActive] = useState(false);
   const whiteboardRef = useRef(false);
@@ -444,6 +501,8 @@ export function usePeerMedia(
         const wanted = track.kind === 'audio' ? mic : camera;
         if (!wanted) {
           if (track.kind === 'video') { processor.current?.stop(); processor.current = null; }
+          // Stopped first, so the ending microphone is not reported as a filter failure.
+          if (track.kind === 'audio') stopFilter();
           track.stop();
         }
         return wanted && track.readyState === 'live';
@@ -457,13 +516,32 @@ export function usePeerMedia(
       if (needMic || needCamera) {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera and microphone require localhost or HTTPS.');
         acquired = await navigator.mediaDevices.getUserMedia({
-          audio: needMic ? { echoCancellation: true, noiseSuppression: noiseChoice.current, autoGainControl: true } : false,
+          audio: needMic ? { echoCancellation: true, noiseSuppression: levelChoice.current !== 'off', autoGainControl: true } : false,
           video: needCamera ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } } : false,
         });
       }
       if (!isCurrent()) {
         acquired?.getTracks().forEach((track) => track.stop());
         return false;
+      }
+
+      const micTrack = acquired?.getAudioTracks()[0];
+      if (micTrack && levelChoice.current === 'strong') {
+        let next: ActiveFilter | null = null;
+        try { next = await startFilter(micTrack); } catch (failure) {
+          if (isCurrent()) {
+            levelChoice.current = 'standard'; setNoiseLevel('standard');
+            setError(strongStopped(failure instanceof Error ? failure.message : 'The noise filter could not start.'));
+          }
+        }
+        if (!isCurrent()) { next?.stop(); acquired?.getTracks().forEach((track) => track.stop()); return false; }
+        filter.current?.stop(); filter.current = next;
+      }
+      // The level may have changed while the microphone was opening; it is recorded, not applied, then.
+      if (micTrack && filter.current?.source === micTrack && levelChoice.current !== 'strong') stopFilter();
+      if (micTrack && standardSupported && canSuppress(micTrack) && micTrack.getConstraints().noiseSuppression !== (levelChoice.current !== 'off')) {
+        await micTrack.applyConstraints({ ...micTrack.getConstraints(), noiseSuppression: levelChoice.current !== 'off' }).catch(() => {});
+        if (!isCurrent()) { acquired?.getTracks().forEach((track) => track.stop()); return false; }
       }
 
       const cameraTrack = acquired?.getVideoTracks()[0];
@@ -495,6 +573,7 @@ export function usePeerMedia(
       setHasChosenDevices(true);
       return true;
     } catch (failure) {
+      if (filter.current && acquired?.getTracks().includes(filter.current.source)) stopFilter();
       acquired?.getTracks().forEach((track) => track.stop());
       if (isCurrent()) {
         // Permission failure for a new device must not disable an existing one.
@@ -509,29 +588,61 @@ export function usePeerMedia(
     } finally {
       if (isCurrent()) setBusy(false);
     }
-  }, [publishCapture, syncSenders]);
+  }, [publishCapture, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
 
-  const chooseNoiseSuppression = useCallback(async (enabled: boolean) => {
-    if (!noiseSupported) return;
+  // The one way to change the noise level: the settings dialog uses it, and so can the app at
+  // runtime, without a user gesture (#3 steps Strong down under device load through here).
+  // With the microphone off it only records the choice. With it on, built-in suppression is
+  // toggled on the live capture track and each sender's track is replaced in place, so nothing
+  // is recaptured or renegotiated. Resolves to the level in effect afterwards.
+  const chooseNoiseLevel = useCallback(async function choose(level: NoiseLevel): Promise<NoiseLevel> {
+    if (level === 'strong' && !strongSupported) return levelChoice.current;
     const generation = epoch.current;
-    const requestId = ++request.current;
-    const isCurrent = () => generation === epoch.current && requestId === request.current;
-    setBusy(true); setError('');
+    const requestId = ++levelRequest.current;
+    const track = capture.current?.getAudioTracks().find((item) => item.readyState === 'live');
+    if (!track) {
+      // As the latest request, this also clears a busy state left by a change it overtook.
+      levelChoice.current = level; setNoiseLevel(level); setLevelBusy(false);
+      return level;
+    }
+    filterStarting.current?.abort();
+    const isLatest = () => generation === epoch.current && requestId === levelRequest.current;
+    // A microphone turned off or reopened meanwhile makes this change stale too.
+    const isCurrent = () => isLatest() && !!capture.current?.getAudioTracks().includes(track) && track.readyState === 'live';
+    // A change overtaken only by the microphone still stands: it is recorded with the microphone
+    // off, or applied to the microphone that replaced this one.
+    const stale = () => isLatest() ? choose(level) : levelChoice.current;
+    setLevelBusy(true); setError('');
+    let next: ActiveFilter | null = null;
     try {
-      const track = capture.current?.getAudioTracks().find((item) => item.readyState === 'live');
-      if (track) {
-        // Update the published track in place, preserving echo cancellation and
-        // gain control, without recapturing or renegotiating peer connections.
-        await track.applyConstraints({ ...track.getConstraints(), noiseSuppression: enabled });
+      // Preserves echo cancellation and gain control on the same capture track.
+      if (standardSupported && canSuppress(track)) await track.applyConstraints({ ...track.getConstraints(), noiseSuppression: level !== 'off' });
+      if (!isCurrent()) return stale();
+      const previous = filter.current;
+      let stopped = '';
+      if (level === 'strong' && previous?.source === track) next = previous;
+      else if (level === 'strong') {
+        try { next = await startFilter(track); } catch (failure) {
+          stopped = failure instanceof Error ? failure.message : 'The noise filter could not start.';
+        }
+        if (!isCurrent()) { next?.stop(); return stale(); }
       }
-      if (!isCurrent()) return;
-      noiseChoice.current = enabled;
-      setNoiseSuppression(enabled);
-      setNoiseActive(track?.getSettings().noiseSuppression);
+      // The new track is ready before any sender changes, and the old filter stops only after.
+      const effective: NoiseLevel = level === 'strong' && !next ? 'standard' : level;
+      filter.current = next;
+      levelChoice.current = effective; setNoiseLevel(effective);
+      publishCapture(capture.current);
+      await syncSenders();
+      if (previous !== next) previous?.stop();
+      if (stopped && isCurrent()) setError(strongStopped(stopped));
+      return effective;
     } catch (failure) {
-      if (isCurrent()) setError(`Could not change noise suppression. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
-    } finally { if (isCurrent()) setBusy(false); }
-  }, [noiseSupported]);
+      if (next && next !== filter.current) next.stop();
+      if (!isCurrent()) return stale();
+      setError(`Could not change noise suppression. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
+      return levelChoice.current;
+    } finally { if (isLatest()) setLevelBusy(false); }
+  }, [publishCapture, standardSupported, startFilter, strongStopped, strongSupported, syncSenders]);
 
   const chooseBackground = useCallback(async (choice: CameraBackground, image?: File) => {
     const generation = epoch.current;
@@ -568,5 +679,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseSuppression, noiseSupported, noiseActive, chooseNoiseSuppression, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }

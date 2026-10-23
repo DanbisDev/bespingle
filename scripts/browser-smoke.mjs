@@ -243,6 +243,43 @@ try {
   for (const page of [alice, bob]) await page.evaluate(() => window.__setVoice(0));
   for (const page of [alice, bob]) await page.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 0);
   console.log('Speaking highlights passed: silence, local/remote voice, simultaneous speakers, light blue border, expanded view, and release');
+
+  // Changing the noise level mid-call swaps Alice's audio sender in place: no new offer and no gap.
+  const descriptions = (page) => page.evaluate(() => window.__wire.filter((message) => message.type === 'signal' && message.description).length);
+  const before = { alice: await descriptions(alice), bob: await descriptions(bob) };
+  const received = () => bob.evaluate(async () => {
+    const pc = window.__pcs.findLast((item) => item.connectionState === 'connected');
+    return [...(await pc.getStats()).values()].filter((row) => row.type === 'inbound-rtp' && row.kind === 'audio').reduce((sum, row) => sum + row.bytesReceived, 0);
+  });
+  const sent = () => alice.evaluate(() => {
+    const pc = window.__pcs.findLast((item) => item.connectionState === 'connected');
+    const track = pc.getTransceivers()[0].sender.track;
+    const raw = window.__streams[0].getAudioTracks()[0];
+    return { filtered: track.id !== raw.id, live: track.readyState === 'live', raw: raw.readyState };
+  });
+  await alice.evaluate(() => window.__setVoice(0.15));
+  // Alice never chose a level, so her call started at the Strong default.
+  await alice.waitForFunction(() => window.__pcs.findLast((item) => item.connectionState === 'connected')?.getTransceivers()[0].sender.track?.id !== window.__streams[0].getAudioTracks()[0].id);
+  assert.deepEqual(await sent(), { filtered: true, live: true, raw: 'live' }, 'A call starts at Strong, sending the filter output');
+  await alice.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  assert(await alice.getByRole('radio', { name: 'Strong', exact: true }).isChecked(), 'Strong is the default level');
+  for (const [name, filtered] of [['Off', false], ['Strong', true], ['Standard', false], ['Strong', true], ['Standard', false]]) {
+    const bytes = await received();
+    await alice.getByRole('radio', { name, exact: true }).click();
+    await alice.waitForFunction((name) => { const input = document.querySelector(`.noise-level input[aria-label="${name}"]`); return input.checked && !input.closest('fieldset').disabled; }, name);
+    assert.deepEqual(await sent(), { filtered, live: true, raw: 'live' }, `${name} sends ${filtered ? 'the filter output' : 'the raw microphone'} on the same sender`);
+    await bob.waitForFunction(async (bytes) => {
+      const pc = window.__pcs.findLast((item) => item.connectionState === 'connected');
+      return [...(await pc.getStats()).values()].filter((row) => row.type === 'inbound-rtp' && row.kind === 'audio').reduce((sum, row) => sum + row.bytesReceived, 0) > bytes + 2000;
+    }, bytes);
+    await bob.locator('[data-testid="video-peer"].is-speaking').waitFor();
+  }
+  await alice.evaluate(() => window.__setVoice(0));
+  await bob.waitForFunction(() => !document.querySelector('[data-testid="video-peer"]').classList.contains('is-speaking'));
+  await alice.getByRole('button', { name: 'Done', exact: false }).click();
+  assert.deepEqual({ alice: await descriptions(alice), bob: await descriptions(bob) }, before, 'Changing the noise level does not renegotiate');
+  assert.equal((await captureState(alice)).requests.length, 1, 'Changing the noise level does not recapture');
+  console.log('Noise level switching mid-call passed: filter output on the existing sender, no new offer, remote audio and speaking continue');
   await alice.waitForTimeout(1800);
   const aliceStats = await stats(alice);
   const bobStats = await stats(bob);
