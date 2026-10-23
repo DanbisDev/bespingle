@@ -639,17 +639,38 @@ func TestCarpetTransitionsPreserveDevicesAndDisconnectRemovesPlayer(t *testing.T
 func TestSignalsAreOnlySetupAndOnlyWithinSharedCarpet(t *testing.T) {
 	h, clock := testHub(t, testWorld())
 	a, b := unitClient(t, h, "Alice"), unitClient(t, h, "Bob")
-	walkTo(t, h, clock, a, 120, 216)
-	walkTo(t, h, clock, b, 408, 216)
 	drain(a)
 	drain(b)
 	pa, pb := snapshot(h, a), snapshot(h, b)
 	sig := signalMessage{Type: "signal", To: pb.ID, SessionID: "test-session", Candidate: &iceCandidate{Candidate: "candidate:1 1 udp 1 127.0.0.1 1234 typ host"}}
-	if err := h.handle(a, marshal(sig)); err == nil {
-		t.Fatal("cross-carpet signal was accepted")
+	// Signaling that can no longer be delivered is the normal tail of a call
+	// ending, so it is dropped without forwarding or an error to the sender.
+	dropped := func(label string, msg signalMessage) {
+		t.Helper()
+		if err := h.handle(a, marshal(msg)); err != nil {
+			t.Fatalf("%s signal returned %v", label, err)
+		}
+		if len(a.send) != 0 || len(b.send) != 0 {
+			t.Fatalf("%s signal produced messages", label)
+		}
 	}
-	if len(b.send) != 0 {
-		t.Fatal("cross-carpet signal was forwarded")
+	dropped("off-carpet sender", sig)
+	walkTo(t, h, clock, a, 120, 216)
+	walkTo(t, h, clock, b, 408, 216)
+	drain(a)
+	drain(b)
+	dropped("cross-carpet", sig)
+	departed := sig
+	departed.To = strings.Repeat("0", 32)
+	dropped("departed peer", departed)
+	departed.Candidate = nil
+	if err := h.handle(a, marshal(departed)); err == nil || err.Error() != "send exactly one SDP description or ICE candidate" {
+		t.Fatalf("malformed signal to departed peer returned %v", err)
+	}
+	self := sig
+	self.To = pa.ID
+	if err := h.handle(a, marshal(self)); err == nil || err.Error() != "signaling requires two participants on the same carpet" {
+		t.Fatalf("self signal returned %v", err)
 	}
 	walkTo(t, h, clock, b, 168, 216)
 	drain(a)
@@ -798,7 +819,15 @@ func TestWebSocketJoinSignalDepartureAndOrigin(t *testing.T) {
 	if err := a.WriteJSON(signalMessage{Type: "signal", To: bID, SessionID: "integration", Candidate: &iceCandidate{Candidate: "candidate:1 1 udp 1 127.0.0.1 9999 typ host"}}); err != nil {
 		t.Fatal(err)
 	}
-	readUntil(a, func(msg map[string]json.RawMessage) bool { return string(msg["type"]) == `"error"` })
+	// The off-carpet signal is dropped silently, so the first error the sender
+	// sees is the one provoked by this follow-up message.
+	if err := a.WriteJSON(map[string]any{"type": "unsupported"}); err != nil {
+		t.Fatal(err)
+	}
+	errMsg := readUntil(a, func(msg map[string]json.RawMessage) bool { return string(msg["type"]) == `"error"` })
+	if string(errMsg["message"]) != `"unsupported message type"` {
+		t.Fatalf("off-carpet signal produced an error: %s", errMsg["message"])
+	}
 	a.Close()
 	readUntil(b, stateWith(bID, "a", 1))
 }

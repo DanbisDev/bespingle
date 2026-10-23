@@ -1,0 +1,22 @@
+RNNoise microphone noise filter
+
+Model and library: RNNoise
+Copyright (c) 2021, Shiguredo Inc.
+Copyright (c) 2017, Mozilla
+Copyright (c) 2007-2017, Jean-Marc Valin
+Copyright (c) 2005-2017, Xiph.Org Foundation
+Copyright (c) 2003-2004, Mark Borgerding
+Licensed under the BSD 3-Clause licence (RNNOISE-LICENSE.txt).
+Source: https://github.com/xiph/rnnoise
+Built from Shiguredo's fork, tag 2022.1.0: https://github.com/shiguredo/rnnoise
+
+WebAssembly build: @shiguredo/rnnoise-wasm 2022.2.0
+Copyright 2021, Takeru Ohta (Original Author)
+Copyright 2021, Shiguredo Inc.
+Licensed under the Apache License, Version 2.0 (RNNOISE-WASM-LICENSE.txt).
+Source: https://github.com/shiguredo/rnnoise-wasm
+
+The RNNoise model weights are compiled into the WebAssembly binaries
+rnnoise.wasm and rnnoise_simd.wasm, which are distributed unmodified.
+Bespingle's AudioWorklet processor and its loader are application code and do
+not use the package's JavaScript glue.
