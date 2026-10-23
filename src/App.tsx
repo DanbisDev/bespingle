@@ -194,21 +194,25 @@ export default function App() {
   const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || editingVideo || isMediaPrompt;
   const settingsOpen = editingMicrophone && connected && !!self;
   const backgroundOpen = editingBackground && connected && !!self;
+  const videoOpen = editingVideo && connected && !!self;
 
-  // A device error shown in a dialog was already seen there, so it must not
-  // follow the person into the banner once that dialog goes away by any route.
-  // The render that removes the dialog keeps it out of the alert banner too, so
-  // it is never painted or announced before it is cleared.
-  const deviceDialogs = useRef({ settingsOpen, backgroundOpen, isMediaPrompt });
-  const previousDialogs = deviceDialogs.current;
-  const deviceDialogClosed = (previousDialogs.settingsOpen && !settingsOpen) || (previousDialogs.backgroundOpen && !backgroundOpen) || (previousDialogs.isMediaPrompt && !isMediaPrompt);
+  // Every dialog that shows the device error in itself. One open keeps that
+  // error out of the banner; once one goes away by any route, the error was
+  // already seen there, so it is cleared rather than following the person into
+  // the banner. The render that removes the dialog keeps it out of the alert
+  // banner too, so it is never painted or announced before it is cleared.
+  const deviceDialogs = { microphone: settingsOpen, video: videoOpen, background: backgroundOpen, devices: isMediaPrompt };
+  type DeviceDialog = keyof typeof deviceDialogs;
+  const deviceDialogOpen = Object.values(deviceDialogs).some(Boolean);
+  const previousDialogs = useRef(deviceDialogs);
+  const deviceDialogClosed = (Object.keys(deviceDialogs) as DeviceDialog[]).some((dialog) => previousDialogs.current[dialog] && !deviceDialogs[dialog]);
   const { clearError: clearMediaError } = media;
   useLayoutEffect(() => {
-    deviceDialogs.current = { settingsOpen, backgroundOpen, isMediaPrompt };
+    previousDialogs.current = deviceDialogs;
     if (deviceDialogClosed) clearMediaError();
-  }, [settingsOpen, backgroundOpen, isMediaPrompt, deviceDialogClosed, clearMediaError]);
+  });
 
-  const bannerError = connected ? game.serverError || (!isMediaPrompt && !editingBackground && !editingMicrophone && !editingVideo && !deviceDialogClosed ? media.error : '') : '';
+  const bannerError = connected ? game.serverError || (!deviceDialogOpen && !deviceDialogClosed ? media.error : '') : '';
   const dismissBanner = () => { if (game.serverError) game.clearServerError(); else clearMediaError(); };
 
   return <div className="app-shell">
@@ -282,7 +286,7 @@ export default function App() {
       <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {editingVideo && connected && self && <Dialog title="Video settings" description="Choose how much video you send.">
+    {videoOpen && self && <Dialog title="Video settings" description="Choose how much video you send.">
       <fieldset className="quality-settings"><legend>Video quality</legend>
         {videoQualities.map(({ id, label, detail }) => <label key={id} className="quality-choice"><input type="radio" name="video-quality" value={id} aria-label={label} aria-describedby={`quality-${id}`} checked={media.quality === id} onChange={() => media.chooseQuality(id)} /><span><strong>{label}</strong><small id={`quality-${id}`}>{detail}</small></span></label>)}
       </fieldset>
