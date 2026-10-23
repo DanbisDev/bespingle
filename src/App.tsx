@@ -173,7 +173,7 @@ export default function App() {
             </> : <div className="quiet-floor"><Icon name="people" /><span>Walk onto a carpet to start a conversation.</span><span className={`quiet-status ${self?.mic || media.cameraOn ? 'is-enabled' : ''}`}><i />{self?.mic && media.cameraOn ? 'Mic & camera on' : self?.mic ? 'Microphone on' : media.cameraOn ? 'Camera on' : 'Devices off'}</span></div>}
           </div>
         </section>
-        <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
+        <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onCancelMove={game.cancelMove} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
           {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} />}
         </div>
       </div>
