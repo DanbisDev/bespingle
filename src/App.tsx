@@ -13,6 +13,7 @@ import type { RemoteMedia } from './usePeerMedia';
 import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 import { videoQualities } from './videoQuality';
+import { Whiteboard } from './Whiteboard';
 
 type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
 const reactions = [
@@ -106,6 +107,7 @@ export default function App() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [editingBackground, setEditingBackground] = useState(false);
   const [editingMicrophone, setEditingMicrophone] = useState(false);
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [selectedTile, setSelectedTile] = useState('');
@@ -145,6 +147,12 @@ export default function App() {
     if (await media.chooseMedia(mic, camera)) setPromptCarpet((current) => current === id ? '' : current);
   }
 
+  const wasWhiteboardActive = useRef(false);
+  useEffect(() => {
+    if (wasWhiteboardActive.current && !media.whiteboardActive) setWhiteboardOpen(false);
+    wasWhiteboardActive.current = media.whiteboardActive;
+  }, [media.whiteboardActive]);
+
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
   const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
 
@@ -183,7 +191,8 @@ export default function App() {
           <button className="device-button" disabled={!connected || media.busy || isMediaPrompt} aria-label="Audio and video settings" onClick={() => setEditingMicrophone(true)}><Icon name="mic" /><span>Settings</span></button>
           <button className={media.cameraOn ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={media.cameraOn ? 'Turn camera off' : 'Turn camera on'} aria-pressed={media.cameraOn} onClick={() => { void media.chooseMedia(self?.mic ?? false, !media.cameraOn); }}><Icon name="camera" off={!media.cameraOn} /><span>{media.cameraOn ? media.quality === 'audio' ? 'Camera paused' : 'Camera on' : 'Camera off'}</span></button>
           <button className={`device-button ${media.background !== 'none' ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Camera background" onClick={() => setEditingBackground(true)}><Icon name="camera" /><span>Background</span></button>
-          <button className={`device-button ${media.screenStream ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || isMediaPrompt} aria-label={media.screenStream ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream ? 'Stop sharing' : 'Share screen'}</span></button>
+          <button className={`device-button ${media.screenStream && !media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || media.whiteboardActive || isMediaPrompt} aria-label={media.screenStream && !media.whiteboardActive ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream && !media.whiteboardActive} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream && !media.whiteboardActive ? 'Stop sharing' : 'Share screen'}</span></button>
+          <button className={`device-button ${media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || (!!media.screenStream && !media.whiteboardActive) || isMediaPrompt} aria-label={media.whiteboardActive ? 'Close whiteboard' : 'Open whiteboard'} aria-pressed={media.whiteboardActive} title={carpet ? 'Draw on a shared whiteboard' : 'Walk onto a carpet to use the whiteboard'} onClick={() => { if (media.whiteboardActive) { media.stopScreen(); } else { setWhiteboardOpen(true); } }}><Icon name="screen" /><span>{media.whiteboardActive ? 'Close board' : 'Whiteboard'}</span></button>
           <span className="hud-divider" /><button className="leave-button" disabled={!connected} onClick={game.leave} aria-label="Leave office"><Icon name="exit" /></button>
         </div>
         <div className="movement-hint"><span><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>WASD or arrow keys to walk<small>Double-click to portal / swap · Shift to sprint · Z to dance · Scroll to zoom</small></span></div>
@@ -225,14 +234,16 @@ export default function App() {
       <div className="form-actions"><button className="primary-button" onClick={() => setEditingBackground(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {isMediaPrompt && <Dialog title={`You’re in ${carpet?.name ?? 'a conversation'}.`} description="What would you like to enable? You can hear and see others with your own devices off." className="media-dialog">
+    {isMediaPrompt && <Dialog title={`You're in ${carpet?.name ?? 'a conversation'}.`} description="What would you like to enable? You can hear and see others with your own devices off." className="media-dialog">
       <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
       <div className="device-choices">
         <button disabled={media.busy} onClick={() => { void chooseDevices(true, true); }}><span className="choice-icons"><Icon name="mic" /><Icon name="camera" /></span><strong>Both</strong><span>Microphone & camera</span></button>
         <button disabled={media.busy} onClick={() => { void chooseDevices(true, false); }}><span className="choice-icons"><Icon name="mic" /></span><strong>Microphone only</strong><span>Join with your voice</span></button>
         <button disabled={media.busy} onClick={() => { void chooseDevices(false, true); }}><span className="choice-icons"><Icon name="camera" /></span><strong>Video only</strong><span>Keep your microphone off</span></button>
         <button disabled={media.busy} onClick={() => { void chooseDevices(false, false); }}><span className="choice-icons"><Icon name="people" /></span><strong>Neither</strong><span>Just listen and watch</span></button>
-      </div>{media.busy && <p className="permission-hint" role="status">Check your browser’s device permission request…</p>}{media.error && <p className="form-error" role="alert">{media.error}</p>}<p className="media-note">Device settings stay the same until you change them or leave the game.</p>
+      </div>{media.busy && <p className="permission-hint" role="status">Check your browser's device permission request…</p>}{media.error && <p className="form-error" role="alert">{media.error}</p>}<p className="media-note">Device settings stay the same until you change them or leave the game.</p>
     </Dialog>}
+
+    {whiteboardOpen && <Whiteboard onStream={(stream) => media.startWhiteboard(stream)} onClose={() => { if (media.whiteboardActive) media.stopScreen(); setWhiteboardOpen(false); }} />}
   </div>;
 }
