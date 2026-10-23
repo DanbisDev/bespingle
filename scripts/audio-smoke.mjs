@@ -77,11 +77,15 @@ try {
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Microphone settings', 'The ⋯ follows the mic button in keyboard order');
   await page.keyboard.press('Enter');
-  await page.getByRole('dialog', { name: 'Audio and video settings', exact: true }).waitFor();
+  await page.getByRole('dialog', { name: 'Microphone settings', exact: true }).waitFor();
   await done();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
 
   await settings();
+  await page.getByRole('dialog', { name: 'Microphone settings', exact: true }).waitFor();
+  assert.equal(await page.getByRole('radio').count(), 3, 'Microphone settings holds the three noise levels');
+  assert.equal(await page.getByRole('group', { name: 'Video quality', exact: true }).count(), 0, 'Microphone settings holds no video quality');
+  assert.equal(await page.getByText('Audio and video settings').count(), 0, 'Nothing is called Audio and video settings');
   assert(await level('Strong').isChecked(), 'The level defaults to Strong');
   await page.getByRole('dialog').screenshot({ path: `${output}/microphone-settings.png` });
   for (const name of ['Off', 'Strong', 'Off']) await choose(name);

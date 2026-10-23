@@ -215,7 +215,7 @@ const audio = (page) => page.evaluate(async () => {
 });
 async function chooseQuality(page, label) {
   await page.bringToFront();
-  await page.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Video settings', exact: true }).click();
   await page.getByRole('radio', { name: label, exact: true }).check();
   await page.getByRole('button', { name: 'Done', exact: false }).click();
 }
