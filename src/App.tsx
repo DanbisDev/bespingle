@@ -13,6 +13,7 @@ import type { RemoteMedia } from './usePeerMedia';
 import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 import { videoQualities } from './videoQuality';
+import { readMirrorSelfView, saveMirrorSelfView } from './selfView';
 import { Whiteboard } from './Whiteboard';
 
 type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check';
@@ -59,7 +60,7 @@ function Dialog({ children, title, description, className = '' }: { children: Re
   </div></div>;
 }
 
-function VideoTile({ player, stream, local, media, screen = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
+function VideoTile({ player, stream, local, media, screen = false, mirror = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean; mirror?: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
   const speaking = useSpeaking(stream, !screen && player.mic && (local || media?.status === 'connected'));
   const [playBlocked, setPlayBlocked] = useState(false);
@@ -71,7 +72,7 @@ function VideoTile({ player, stream, local, media, screen = false, selected, onS
     return () => { element.srcObject = null; };
   }, [stream]);
   const connectionLabel = local ? 'You' : media?.status === 'connected' ? '' : media?.status === 'failed' ? 'Cannot connect directly' : media?.status === 'disconnected' ? 'Disconnected' : 'Connecting…';
-  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
+  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''} ${local && !screen && mirror ? 'is-mirrored' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
     <div className="video-avatar"><Avatar avatar={player.avatar} customAvatar={player.customAvatar} size={64} /></div>
     <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
     <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
@@ -107,6 +108,8 @@ export default function App() {
   const [editingProfile, setEditingProfile] = useState(false);
   const [editingBackground, setEditingBackground] = useState(false);
   const [editingMicrophone, setEditingMicrophone] = useState(false);
+  const [mirrorSelfView, setMirrorSelfView] = useState(readMirrorSelfView);
+  const chooseMirrorSelfView = (mirror: boolean) => { setMirrorSelfView(mirror); saveMirrorSelfView(mirror); };
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -175,7 +178,7 @@ export default function App() {
               </div>
               <div className={`video-layout ${activeTile ? 'has-pin' : 'gallery'}`}><div className="video-grid" aria-label="Pin or unpin a video">
                 {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
-                {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
+                {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} mirror={mirrorSelfView} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
               </div></div>
               {expanded && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
             </> : <div className="quiet-floor"><Icon name="people" /><span>Walk onto a carpet to start a conversation.</span><span className={`quiet-status ${self?.mic || media.cameraOn ? 'is-enabled' : ''}`}><i />{self?.mic && media.cameraOn ? 'Mic & camera on' : self?.mic ? 'Microphone on' : media.cameraOn ? 'Camera on' : 'Devices off'}</span></div>}
@@ -221,13 +224,15 @@ export default function App() {
       <fieldset className="quality-settings"><legend>Video quality</legend>
         {videoQualities.map(({ id, label, detail }) => <label key={id} className="quality-choice"><input type="radio" name="video-quality" value={id} aria-label={label} aria-describedby={`quality-${id}`} checked={media.quality === id} onChange={() => media.chooseQuality(id)} /><span><strong>{label}</strong><small id={`quality-${id}`}>{detail}</small></span></label>)}
       </fieldset>
-      <p className="media-note">{media.quality === 'audio' ? 'Your camera keeps running on your device but is not sent, so others see your avatar. Audio and screen sharing continue.' : 'Your video quality choice is remembered in this browser.'}</p>
+      {media.cameraOn && <div className="self-view-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local mirror={mirrorSelfView} selected={false} onSelect={() => {}} /></div>}
+      <label className="noise-setting"><input type="checkbox" checked={mirrorSelfView} onChange={(event) => chooseMirrorSelfView(event.target.checked)} />Mirror my video</label>
+      <p className="media-note">{media.quality === 'audio' ? 'Your camera keeps running on your device but is not sent, so others see your avatar. Audio and screen sharing continue.' : 'Your video quality choice is remembered in this browser.'} Mirroring changes only how you see yourself; others always see your true image.</p>
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
     {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
-      {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
+      {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local mirror={mirrorSelfView} selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
       <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <p className="media-note">Your background is applied on your device and is visible to everyone in your conversation.</p>
