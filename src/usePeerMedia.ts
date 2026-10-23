@@ -11,6 +11,7 @@ import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
 import { createNoiseFilter, noiseFilterSupported } from './noiseFilter';
 import type { NoiseFilter } from './noiseFilter';
 import { readBackground, readBackgroundImage, readNoiseLevel, saveBackground, saveBackgroundImage, saveNoiseLevel } from './mediaChoices';
+import { pageDevices, recordDevices } from './session';
 
 // Off sends the microphone untouched, Standard uses the browser's built-in noise
 // suppression, and Strong adds the RNNoise filter on top of it.
@@ -48,6 +49,16 @@ async function capSender(sender: RTCRtpSender, target: SenderTarget) {
   await sender.setParameters(parameters);
 }
 
+// Where the Permissions API cannot answer, the permission counts as not granted.
+async function permitted(name: 'camera' | 'microphone') {
+  try { return (await navigator.permissions.query({ name: name as PermissionName })).state === 'granted'; } catch { return false; }
+}
+
+function leftOffNote(mic: boolean, camera: boolean) {
+  if (mic && camera) return 'Your microphone and camera were left off because the browser needs your permission to use them. Turn them on to allow them.';
+  return `Your ${mic ? 'microphone' : 'camera'} was left off because the browser needs your permission to use it. Turn it on to allow it.`;
+}
+
 // Discovery only. There are deliberately no TURN URLs or server media endpoints.
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
@@ -58,6 +69,7 @@ export function usePeerMedia(
   players: Player[],
   send: Send,
   signalHandler: MutableRefObject<(signal: Signal) => void>,
+  rejoined = false,
 ) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteMedia, setRemoteMedia] = useState<Record<string, RemoteMedia>>({});
@@ -122,6 +134,10 @@ export function usePeerMedia(
   const request = useRef(0);
   const activeCarpet = self?.carpetId ?? '';
   const activeSelf = self?.id ?? '';
+  const rejoin = useRef(rejoined);
+  rejoin.current = rejoined;
+  // Someone rejoining has already answered the device prompt if this session ever did.
+  const answeredBefore = rejoined && !!activeSelf && pageDevices() !== null;
 
   const stopFilter = useCallback(() => {
     filterStarting.current?.abort(); filterStarting.current = null;
@@ -504,7 +520,9 @@ export function usePeerMedia(
     void syncSenders();
   }, [publishCapture, stopScreen, syncSenders]);
 
-  const chooseMedia = useCallback(async (mic: boolean, camera: boolean): Promise<boolean> => {
+  // The device buttons and the prompt record what they choose. A restore does not: it brings
+  // back that choice, possibly only in part, and the choice stands for the next rejoin.
+  const acquire = useCallback(async (mic: boolean, camera: boolean, record: boolean): Promise<boolean> => {
     const playerId = context.current.self?.id;
     if (!playerId) return false;
     const generation = epoch.current;
@@ -594,6 +612,7 @@ export function usePeerMedia(
         });
         return false;
       }
+      if (record) recordDevices({ mic, camera });
       setHasChosenDevices(true);
       return true;
     } catch (failure) {
@@ -613,6 +632,26 @@ export function usePeerMedia(
       if (isCurrent()) setBusy(false);
     }
   }, [publishCapture, restoreImage, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
+  const chooseMedia = useCallback((mic: boolean, camera: boolean) => acquire(mic, camera, true), [acquire]);
+
+  // After a rejoin's welcome, what was on comes back on, but only where the browser still
+  // grants the permission, so it never raises a request the person did not make. A click
+  // or leaving meanwhile supersedes it.
+  useEffect(() => {
+    const choice = rejoin.current && activeSelf ? pageDevices() : null;
+    if (!choice?.mic && !choice?.camera) return;
+    const generation = epoch.current;
+    const requestId = request.current;
+    const isCurrent = () => generation === epoch.current && requestId === request.current;
+    let live = true;
+    void (async () => {
+      const [mic, camera] = await Promise.all([choice.mic && permitted('microphone'), choice.camera && permitted('camera')]);
+      if (!live || !isCurrent()) return;
+      if ((mic || camera) && !await acquire(mic, camera, false)) return;
+      if (live && (choice.mic !== mic || choice.camera !== camera)) setError(leftOffNote(choice.mic && !mic, choice.camera && !camera));
+    })();
+    return () => { live = false; };
+  }, [activeSelf, acquire]);
 
   // The one way to change the noise level: the settings dialog uses it, and so can the app at
   // runtime, without a user gesture (#3 steps Strong down under device load through here).
@@ -710,5 +749,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, clearError, busy, hasChosenDevices };
+  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, clearError, busy, hasChosenDevices: hasChosenDevices || answeredBefore };
 }

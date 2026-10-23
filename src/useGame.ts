@@ -3,7 +3,7 @@ import type { Player } from './world';
 import type { CancelMove, ChatMessage, Join, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
 import { pageBuild } from './build';
 import { readProfile } from './profile';
-import { asTile, claimOffice, holdsOffice, readSession, releaseOffice, saveSession } from './session';
+import { asTile, claimOffice, holdsOffice, pageDevices, readSession, recordDevices, releaseOffice, saveSession } from './session';
 import type { Tile } from './session';
 
 type PendingMove = { resolve: (result: MoveResult) => void; timer: ReturnType<typeof setTimeout> };
@@ -30,6 +30,10 @@ export function useGame() {
   const currentSelf = useRef('');
   const [players, setPlayers] = useState<Player[]>([]);
   const [selfId, setSelfId] = useState('');
+  // Whether the current welcome rejoined a session already in the office
+  // (reconnect, refresh, deploy reload or a later visit) rather than entering
+  // from the join form.
+  const [rejoined, setRejoined] = useState(false);
   // Reconnecting covers the wait between retries and each rejoin attempt; the
   // join form shows only while offline, connecting from it, or lost.
   const [status, setStatus] = useState<'offline' | 'connecting' | 'connected' | 'reconnecting' | 'lost'>(() => savedIdentity() ? 'reconnecting' : 'offline');
@@ -175,12 +179,16 @@ export function useGame() {
         currentCarpet.current = carpetId;
         setPlayers(message.players);
         if (message.type === 'welcome') {
+          const rejoin = inOffice.current === identity;
+          // Entering from the form starts with the devices off and unchosen.
+          if (!rejoin) recordDevices(null);
+          setRejoined(rejoin);
           setSelfId(message.selfId);
           setStatus('connected');
           inOffice.current = identity;
           retries.current = 0;
           void claimOffice(true).then((held) => {
-            if (held && inOffice.current) saveSession({ inOffice: true, tile: lastTile.current });
+            if (held && inOffice.current) saveSession({ inOffice: true, tile: lastTile.current, devices: pageDevices() });
           });
           // A different build reloads the page, whose load rejoins from the
           // record. Once per build, so a stale cache cannot loop the reload.
@@ -287,5 +295,5 @@ export function useGame() {
     clearTimeout(serverErrorTimer.current);
   }, [clearMoves]);
 
-  return { messages, players, selfId, status, error, serverError: serverError.message, serverErrorId: serverError.id, clearServerError, join, leave, send, move, cancelMove, serverNow, signalHandler };
+  return { messages, players, selfId, rejoined, status, error, serverError: serverError.message, serverErrorId: serverError.id, clearServerError, join, leave, send, move, cancelMove, serverNow, signalHandler };
 }

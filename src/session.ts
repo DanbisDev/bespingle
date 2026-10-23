@@ -8,7 +8,13 @@ export type Tile = { x: number; y: number; facing: Facing };
  * office is what lets a page load rejoin without the join form. Only the tab
  * holding the office lock writes it; other fields stored alongside are kept.
  */
-export type SessionRecord = { inOffice: boolean; tile: Tile | null };
+export type SessionRecord = { inOffice: boolean; tile: Tile | null; devices: Devices | null };
+/**
+ * The microphone and camera as the person last chose them in this session.
+ * Null until they answer the device prompt or use a device button, and again
+ * after entering from the join form.
+ */
+export type Devices = { mic: boolean; camera: boolean };
 
 const storageKey = 'bespingle_session';
 const facings: readonly string[] = ['up', 'down', 'left', 'right'];
@@ -26,9 +32,15 @@ export function asTile(value: unknown): Tile | null {
   return { x: tile.x!, y: tile.y!, facing: tile.facing! };
 }
 
+function asDevices(value: unknown): Devices | null {
+  const devices = value as Partial<Devices> | null;
+  if (!devices || typeof devices.mic !== 'boolean' || typeof devices.camera !== 'boolean') return null;
+  return { mic: devices.mic, camera: devices.camera };
+}
+
 export function readSession(): SessionRecord {
   const data = stored();
-  return { inOffice: data.inOffice === true, tile: asTile(data.tile) };
+  return { inOffice: data.inOffice === true, tile: asTile(data.tile), devices: asDevices(data.devices) };
 }
 
 export function saveSession(update: Partial<SessionRecord>) {
@@ -84,4 +96,14 @@ export function releaseOffice() {
   abortPending();
   releaseHeld();
   abortPending = releaseHeld = () => {};
+}
+
+// This page's own device choice. A page load starts from the record, which a
+// rejoin restores; a join from the form starts it over. It is written to the
+// record whenever this page holds the office, including once it takes it over.
+let devices: Devices | null | undefined;
+export const pageDevices = () => devices === undefined ? devices = readSession().devices : devices;
+export function recordDevices(choice: Devices | null) {
+  devices = choice;
+  if (holdsOffice()) saveSession({ devices: choice });
 }

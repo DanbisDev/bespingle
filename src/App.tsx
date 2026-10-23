@@ -133,7 +133,7 @@ export default function App() {
   const game = useGame();
   const self = game.players.find((player) => player.id === game.selfId);
   const carpet = world.carpets.find((item) => item.id === self?.carpetId);
-  const media = usePeerMedia(self, game.players, game.send, game.signalHandler);
+  const media = usePeerMedia(self, game.players, game.send, game.signalHandler, game.rejoined);
   const [saved] = useState(readProfile);
   const [name, setName] = useState(saved.name);
   const [avatar, setAvatar] = useState(saved.avatar);

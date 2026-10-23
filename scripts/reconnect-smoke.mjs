@@ -66,11 +66,19 @@ async function context({ refuseStorage = false } = {}) {
     window.__joins = [];
     window.__self = null;
     window.__sawJoinForm = false;
+    window.__sawPrompt = false;
+    window.__captures = [];
+    const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = (constraints) => {
+      window.__captures.push({ audio: !!constraints.audio, video: !!constraints.video });
+      return capture(constraints);
+    };
     const Native = window.WebSocket;
     window.WebSocket = class extends Native {
       constructor(...args) {
         super(...args);
         window.__sockets.push(performance.now());
+        window.__socket = this;
         this.addEventListener('message', (event) => {
           const message = JSON.parse(event.data);
           if (message.type === 'welcome') window.__selfId = message.selfId;
@@ -83,7 +91,10 @@ async function context({ refuseStorage = false } = {}) {
         return super.send(data);
       }
     };
-    new MutationObserver(() => { if (document.querySelector('.join-dialog')) window.__sawJoinForm = true; }).observe(document, { childList: true, subtree: true });
+    new MutationObserver(() => {
+      if (document.querySelector('.join-dialog')) window.__sawJoinForm = true;
+      if (document.querySelector('.media-dialog')) window.__sawPrompt = true;
+    }).observe(document, { childList: true, subtree: true });
   }, refuseStorage);
   return context;
 }
@@ -200,7 +211,7 @@ try {
   assert.equal(await sawJoinForm(page), false, 'The build reload never shows the join form');
   console.log('A new build reloads the page, which rejoins');
 
-  // A rejoin comes back with devices off, so the carpet asks again.
+  // This session entered from the form and never answered, so a rejoin still asks.
   await page.getByRole('button', { name: 'Neither', exact: false }).click();
   await page.getByRole('button', { name: 'Leave office', exact: true }).click();
   await joinForm(page);
@@ -208,6 +219,84 @@ try {
   await joinForm(page);
   assert.deepEqual(await sockets(page), [], 'The leave button marks the person out of the office');
   await office.close();
+
+  // Devices: what was on comes back after a rejoin, where permission is still granted.
+  const devicesOffice = await context();
+  const devices = await open(devicesOffice);
+  const captures = () => devices.evaluate(() => window.__captures);
+  const expectDevices = (mic, camera) => devices.waitForFunction(([mic, camera]) => window.__self?.mic === mic && window.__self?.camera === camera, [mic, camera], { timeout: 10000 });
+  const note = devices.getByRole('alert').filter({ hasText: 'left off because the browser needs your permission' });
+  await devices.getByLabel('Your display name').fill('Ines');
+  await devices.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await inOffice(devices);
+  await devices.locator('[data-testid="game-canvas"]').focus();
+  await devices.keyboard.down('w');
+  await devices.locator('.media-dialog').waitFor();
+  await devices.keyboard.up('w');
+  await devices.getByRole('button', { name: 'Both', exact: false }).click();
+  await expectDevices(true, true);
+  await devices.reload();
+  await inOffice(devices);
+  await expectDevices(true, true);
+  assert.deepEqual(await captures(), [{ audio: true, video: true }], 'A refresh reopens both devices, once');
+  assert.equal(await devices.evaluate(() => window.__sawPrompt), false, 'A refresh does not ask for devices again');
+  await devices.evaluate(() => window.__socket.close());
+  await banner(devices).waitFor();
+  await inOffice(devices, 15000);
+  await expectDevices(true, true);
+  assert.deepEqual(await captures(), [{ audio: true, video: true }, { audio: true, video: true }], 'A reconnect reopens both devices');
+  assert.equal(await devices.evaluate(() => window.__sawPrompt), false, 'A reconnect does not ask for devices again');
+  console.log('A refresh and a reconnect bring the microphone and camera back without a click');
+
+  await devices.getByRole('button', { name: 'Turn camera off', exact: true }).click();
+  await expectDevices(true, false);
+  await devices.reload();
+  await inOffice(devices);
+  await expectDevices(true, false);
+  await devices.waitForTimeout(500);
+  assert.deepEqual(await captures(), [{ audio: true, video: false }], 'Only the microphone comes back');
+  assert.equal(await devices.getByRole('button', { name: 'Turn camera on', exact: true }).count(), 1);
+  console.log('With only the microphone on, only the microphone comes back');
+
+  await devices.getByRole('button', { name: 'Turn camera on', exact: true }).click();
+  await expectDevices(true, true);
+  await devicesOffice.clearPermissions();
+  await devicesOffice.grantPermissions(['microphone'], { origin: url });
+  await devices.reload();
+  await inOffice(devices);
+  await expectDevices(true, false);
+  await note.waitFor();
+  assert.match(await note.innerText(), /Your camera was left off/);
+  assert.deepEqual(await captures(), [{ audio: true, video: false }], 'No camera request without the camera permission');
+  await devicesOffice.clearPermissions();
+  await devices.reload();
+  await inOffice(devices);
+  await note.waitFor();
+  assert.match(await note.innerText(), /microphone and camera were left off/);
+  await devices.waitForTimeout(500);
+  assert.deepEqual(await captures(), [], 'No capture request without permission');
+  assert.equal(await devices.evaluate(() => window.__self.mic || window.__self.camera), false, 'Both stay off');
+  assert.equal(await devices.evaluate(() => window.__sawPrompt), false, 'Missing permission does not bring back the prompt');
+  await devices.screenshot({ path: `${output}/02-left-off.png` });
+  console.log('Without permission the devices stay off with a note, and nothing is requested');
+
+  await devicesOffice.grantPermissions(['camera', 'microphone'], { origin: url });
+  await devices.getByRole('button', { name: 'Leave office', exact: true }).click();
+  await joinForm(devices);
+  await devices.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await inOffice(devices);
+  await devices.locator('.media-dialog').waitFor();
+  assert.equal(await devices.evaluate(() => window.__self.mic || window.__self.camera), false, 'Entering from the form starts with both off');
+  assert.deepEqual(await captures(), [], 'Entering from the form opens nothing');
+  await devices.getByRole('button', { name: 'Neither', exact: false }).click();
+  await devices.locator('.media-dialog').waitFor({ state: 'hidden' });
+  await devices.reload();
+  await inOffice(devices);
+  await devices.waitForTimeout(500);
+  assert.equal(await devices.evaluate(() => window.__sawPrompt), false, 'Neither is remembered as an answer');
+  assert.deepEqual(await captures(), []);
+  console.log('Entering from the form starts with devices off and asks on the carpet');
+  await devicesOffice.close();
 
   const privateMode = await context({ refuseStorage: true });
   const guarded = await open(privateMode);
