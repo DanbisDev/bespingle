@@ -4,10 +4,10 @@ import type { Player } from './world';
 import type { Send, Signal } from './protocol';
 import { createCameraBackground } from './cameraBackground';
 import type { CameraBackground, CameraProcessor } from './cameraBackground';
-import { encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
+import { carrySteps, encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
 import { currentLoad, subscribeLoad, watchEncoders } from './deviceLoad';
 import { LoadStepper } from './loadSteps';
-import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
+import type { LadderInput, LadderSections, QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
 import { createNoiseFilter, noiseFilterSupported } from './noiseFilter';
 import type { NoiseFilter } from './noiseFilter';
 
@@ -46,6 +46,8 @@ async function capSender(sender: RTCRtpSender, target: SenderTarget) {
   });
   await sender.setParameters(parameters);
 }
+
+const sameLadder = (a: LadderInput, b: LadderInput) => (Object.keys(a) as (keyof LadderInput)[]).every((key) => a[key] === b[key]);
 
 // Discovery only. There are deliberately no TURN URLs or server media endpoints.
 const RTC_CONFIG: RTCConfiguration = {
@@ -91,12 +93,16 @@ export function usePeerMedia(
   qualityChoice.current = quality;
   const [cameraOn, setCameraOn] = useState(false);
   const participants = self?.carpetId ? players.filter((player) => player.carpetId === self.carpetId).length : 1;
-  // Further step-downs for device load, below what the count alone sets.
-  const [loadSteps, setLoadSteps] = useState(0);
-  const headroom = loadHeadroom({ participants, quality, sharing: !!screenStream });
-  const room = useRef(headroom);
-  room.current = headroom;
-  const target = useRef<QualityTarget>(qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) }));
+  const ladder: LadderInput = { participants, quality, sharing: !!screenStream, background: background !== 'none' && cameraOn, noise: noiseLevel === 'strong' && filtering };
+  // Further step-downs for device load, below what the count alone sets, and
+  // the ladder they were counted on.
+  const [load, setLoad] = useState<{ steps: number; ladder: LadderInput }>({ steps: 0, ladder });
+  const headroom = loadHeadroom(ladder);
+  const loadSteps = Math.min(carrySteps(load.steps, load.ladder, ladder), headroom);
+  const ceiling = qualityTarget({ ...ladder, loadSteps });
+  const policy = useRef({ load, ladder });
+  policy.current = { load, ladder };
+  const target = useRef<QualityTarget>(ceiling);
   const context = useRef({ self, players });
   context.current = { self, players };
   const epoch = useRef(0);
@@ -358,7 +364,14 @@ export function usePeerMedia(
   // the outgoing video senders and turns its level into load steps.
   useEffect(() => {
     const stepper = new LoadStepper();
-    const update = () => setLoadSteps(stepper.update(currentLoad(), performance.now(), room.current));
+    let counted = policy.current.ladder;
+    const update = () => {
+      const { ladder } = policy.current;
+      stepper.steps = carrySteps(stepper.steps, counted, ladder);
+      counted = ladder;
+      const steps = stepper.update(currentLoad(), performance.now(), loadHeadroom(ladder));
+      setLoad((current) => current.steps === steps && sameLadder(current.ladder, ladder) ? current : { steps, ladder });
+    };
     const unsubscribe = subscribeLoad(update);
     const unwatch = watchEncoders(() => [...peers.current.values()].flatMap(({ pc }) => (
       pc.connectionState === 'connected' ? pc.getTransceivers().slice(1, 3).flatMap(({ sender }) => sender.track ? [sender] : []) : []
@@ -369,12 +382,26 @@ export function usePeerMedia(
   }, []);
 
   // Every client sees the same count, so a carpet steps down together.
+  const senderCaps = JSON.stringify([ceiling.camera, ceiling.screen]);
   useEffect(() => {
-    const next = qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) });
-    if (JSON.stringify(next) === JSON.stringify(target.current)) return;
-    target.current = next;
+    if (senderCaps === JSON.stringify([target.current.camera, target.current.screen])) return;
+    target.current = ceiling;
     for (const peer of peers.current.values()) applyQuality(peer);
-  }, [participants, quality, loadSteps, headroom, applyQuality]);
+  }, [senderCaps, applyQuality]);
+
+  // The filters follow their ceilings in place. A new processor or filter is
+  // published as a new local stream, so it is brought to the ceiling too.
+  useEffect(() => {
+    processor.current?.setRung(ceiling.background);
+    filter.current?.setBypassed(ceiling.noise === 'standard');
+  }, [ceiling.background, ceiling.noise, localStream]);
+
+  // The ceiling a filter about to start would be held to, so it starts there.
+  const ceilingWith = useCallback((sections: Partial<LadderSections>) => {
+    const { load, ladder } = policy.current;
+    const next = { ...ladder, ...sections };
+    return qualityTarget({ ...next, loadSteps: Math.min(carrySteps(load.steps, load.ladder, next), loadHeadroom(next)) });
+  }, []);
 
   const chooseQuality = useCallback((choice: VideoQuality) => {
     qualityChoice.current = choice;
@@ -402,11 +429,11 @@ export function usePeerMedia(
         if (source.readyState !== 'live') return;
         levelChoice.current = 'standard'; setNoiseLevel('standard');
         setError(strongStopped(message));
-      }, controller.signal);
+      }, controller.signal, { bypassed: ceilingWith({ noise: true }).noise === 'standard' });
       active = { ...started, source };
       return active;
     } finally { if (filterStarting.current === controller) filterStarting.current = null; }
-  }, [publishCapture, strongStopped, syncSenders]);
+  }, [ceilingWith, publishCapture, strongStopped, syncSenders]);
 
   const [whiteboardActive, setWhiteboardActive] = useState(false);
   const whiteboardRef = useRef(false);
@@ -553,7 +580,7 @@ export function usePeerMedia(
           cameraTrack.stop(); processor.current?.stop(); processor.current = null;
           publishCapture(new MediaStream((capture.current?.getAudioTracks() ?? [])));
           void syncSenders();
-        }, backgroundChoice.current === 'custom' ? backgroundImage.current : undefined, controller.signal);
+        }, backgroundChoice.current === 'custom' ? backgroundImage.current : undefined, controller.signal, { rung: ceilingWith({ background: true }).background });
         if (processing.current === controller) processing.current = null;
         if (!isCurrent()) { next.stop(); acquired?.getTracks().forEach((track) => track.stop()); return false; }
         processor.current = next;
@@ -588,10 +615,10 @@ export function usePeerMedia(
     } finally {
       if (isCurrent()) setBusy(false);
     }
-  }, [publishCapture, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
+  }, [ceilingWith, publishCapture, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
 
-  // The one way to change the noise level: the settings dialog uses it, and so can the app at
-  // runtime, without a user gesture (#3 steps Strong down under device load through here).
+  // The one way to change the person's noise level, from the settings dialog. Device load never
+  // comes through here: it holds Strong's filter bypassed in place, below a choice it leaves as is.
   // With the microphone off it only records the choice. With it on, built-in suppression is
   // toggled on the live capture track and each sender's track is replaced in place, so nothing
   // is recaptured or renegotiated. Resolves to the level in effect afterwards.
@@ -662,7 +689,7 @@ export function usePeerMedia(
           cameraTrack.stop(); processor.current?.stop(); processor.current = null;
           publishCapture(new MediaStream(capture.current?.getAudioTracks() ?? []));
           void syncSenders(); setError(`Camera background stopped. ${message}`);
-        }, choice === 'custom' ? selectedImage : undefined, controller.signal);
+        }, choice === 'custom' ? selectedImage : undefined, controller.signal, { rung: ceilingWith({ background: true }).background });
         if (processing.current === controller) processing.current = null;
       }
       if (!isCurrent()) { next?.stop(); return; }
@@ -677,7 +704,11 @@ export function usePeerMedia(
       next?.stop();
       if (isCurrent()) setError(`Could not apply camera background. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
     } finally { if (isCurrent()) setBusy(false); }
-  }, [publishCapture, syncSenders]);
+  }, [ceilingWith, publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  // A filter held below the person's choice by the quality policy.
+  const backgroundReduced = ladder.background && ceiling.background > 0;
+  const noiseReduced = ladder.noise && ceiling.noise === 'standard';
+
+  return { quality, chooseQuality, cameraOn, noiseLevel, noiseReduced, backgroundReduced, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }
