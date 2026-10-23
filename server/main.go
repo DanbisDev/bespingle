@@ -784,8 +784,13 @@ func (h *hub) handle(c *client, data []byte) error {
 			return err
 		}
 		peer := h.clients[msg.To]
-		if peer == nil || peer == c || c.player.CarpetID == "" || peer.player.CarpetID != c.player.CarpetID {
+		if peer == c {
 			return errors.New("signaling requires two participants on the same carpet")
+		}
+		// A departed peer or one who left the carpet is the normal end of a
+		// call: in-flight signaling loses that race, so drop it without error.
+		if peer == nil || c.player.CarpetID == "" || peer.player.CarpetID != c.player.CarpetID {
+			return nil
 		}
 		if !h.enqueueLocked(peer, marshal(serverSignal{signalMessage: msg, From: c.player.ID})) {
 			h.broadcastLocked()

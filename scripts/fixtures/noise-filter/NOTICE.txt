@@ -1,0 +1,12 @@
+Recordings used by scripts/noise-filter-smoke.mjs to measure the noise filter.
+Each is a short excerpt, mixed to mono and re-encoded as 48 kHz Opus. All three
+source recordings are in the public domain.
+
+voice.webm: seconds 9-17 of "Sonnet-by Christina Rossetti.ogg", read by Shanel.
+https://commons.wikimedia.org/wiki/File:Sonnet-by_Christina_Rossetti.ogg
+
+keyboard.webm: seconds 10-15 of "Computer keyboard.ogg", recorded by russiandoll.
+https://commons.wikimedia.org/wiki/File:Computer_keyboard.ogg
+
+kitchen.webm: seconds 28-33 of "Kitchen tidy up.ogg", recorded by starlite.
+https://commons.wikimedia.org/wiki/File:Kitchen_tidy_up.ogg
