@@ -553,7 +553,7 @@ func (h *hub) handle(c *client, data []byte) error {
 		if err := strictDecode(data, &msg); err != nil {
 			return errors.New("invalid profile message")
 		}
-		if msg.CustomAvatar != "" && !avatarIDPattern.MatchString(msg.CustomAvatar) {
+		if msg.CustomAvatar != "" && !validAvatarRef(msg.CustomAvatar) {
 			return errors.New("invalid custom avatar")
 		}
 		name, err := validateProfile(msg.Name, msg.Avatar)

@@ -85,18 +85,25 @@ readable by anyone who knows it. This is not private file storage.
    the character you want. The code grants one successful upload for 30 minutes;
    share it only with your agent. Keep the selector open during upload.
 3. The agent calls `avatar_spec` to read the format, creates the PNG, then calls
-   `upload_avatar` with `uploadCode` and `pngBase64` (standard base64 file bytes,
-   without a data URL prefix). These tools provide the format and storage;
+   `upload_avatar` with `uploadCode`, `pngBase64` (standard base64 file bytes,
+   without a data URL prefix) and, optionally, `walkFrames` and `danceFrames`
+   (each 2 to 16, default 2). These tools provide the format and storage;
    the agent supplies image generation or drawing capabilities.
 4. After storage succeeds, the browser selects the uploaded avatar. Click
    **Enter the office** or **Save profile** to use and remember it.
 
-The sprite sheet is a transparent **384 × 256 PNG**, at most **1 MiB**: six
-64 × 64 columns (idle, walk 1, walk 2, seated, dance 1, dance 2) and four rows
-(down, left, right, up). Feet align at (32, 58) within each cell. All 24 poses
-belong to the same character. Invalid images are rejected before storage;
-accepted PNGs are decoded and re-encoded to remove metadata. Missing images
-fall back to the chosen default avatar.
+The sprite sheet is a transparent PNG of 64 × 64 cells, at most **1 MiB**,
+**256 px** tall (four rows: down, left, right, up) and **64 × (2 + W + D) px**
+wide, where W is the number of walk frames and D the number of dance frames,
+each a whole number from 2 to 16 (default 2). Columns run idle, walk 1 … walk W,
+seated, dance 1 … dance D, so sheets range from 384 to 2176 px wide; the
+classic two-and-two sheet is 384 × 256. Walking plays the walk frames in order
+on a loop at 120 ms per frame, and dancing plays the dance frames in order on a
+loop at 160 ms per frame. Feet align at (32, 58) within each cell, and every
+cell belongs to the same character. The avatar's reference is the content hash
+of the stored PNG, followed by `-W-D` unless both counts are 2. Invalid images
+are rejected before storage; accepted PNGs are decoded and re-encoded to remove
+metadata. Missing images fall back to the chosen default avatar.
 
 The cookie stores only a name, default selection, and custom avatar references;
 image bytes live in the bucket. It is scoped to this site, uses `SameSite=Lax`

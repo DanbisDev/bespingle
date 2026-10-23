@@ -9,7 +9,7 @@ export function Avatar({ avatar, customAvatar, size = 48 }: { avatar: number; cu
       if (!ctx || !canvas) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.imageSmoothingEnabled = false;
-      drawAvatar(ctx, 48, 84, avatar, 'down', false, 0, 1, 0, customAvatar);
+      drawAvatar(ctx, 48, 84, avatar, 'down', false, undefined, 1, undefined, customAvatar);
     };
     render();
     window.addEventListener('avatar-loaded', render);
