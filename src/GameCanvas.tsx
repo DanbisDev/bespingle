@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { drawAvatar, drawGameWorld } from './art';
-import { findCarpet, findChair, findRoute, occupiedTiles, planWalk, world, type Player } from './world';
+import { findCarpet, findChair, snapToGrid, world, type Player } from './world';
 import type { CancelMove, Move } from './protocol';
 
 interface GameCanvasProps {
@@ -20,10 +20,7 @@ type PendingStep = { id: string; fromX: number; fromY: number; startsAt: number 
 type Bounce = { id: string; direction: Direction; startedAt: number };
 // A withdrawn queued step stays hidden until the server's answer and the state after it arrive.
 type Cancel = { startsAt: number; answer?: { accepted: boolean; players: Player[] } };
-type Tile = { x: number; y: number };
-// A double-clicked walk: the tiles from where it was planned to its destination.
-type Route = { id: string; destination: Tile; path: Tile[] };
-type StepSource = 'tap' | 'held' | 'route';
+type StepSource = 'tap' | 'held';
 
 const directions: Record<string, Direction> = {
   KeyW: 'up', KeyA: 'left', KeyS: 'down', KeyD: 'right',
@@ -48,6 +45,11 @@ function typingInto(target: EventTarget | null): boolean {
 // Steps move at a constant pace, so a queued step continues its predecessor
 // without slowing at the tile boundary between them.
 function animatedPosition(player: Player, now: number): Position {
+  if (player.move?.portal) {
+    const progress = portalProgress(player, now);
+    return { x: progress < .5 ? player.x : player.move.toX,
+      y: progress < .5 ? player.y : player.move.toY, facing: player.facing };
+  }
   let x = player.x;
   let y = player.y;
   let facing = player.facing;
@@ -67,6 +69,39 @@ function animatedPosition(player: Player, now: number): Position {
 function tail(player: Player) {
   const last = player.next ?? player.move;
   return last ? { x: last.toX, y: last.toY } : { x: player.x, y: player.y };
+}
+
+function portalProgress(player: Player, now: number): number {
+  return player.move ? Math.max(0, Math.min(1, (now - player.move.startedAt) / player.move.durationMs)) : 1;
+}
+
+function drawPortal(ctx: CanvasRenderingContext2D, x: number, y: number, color: 'orange' | 'blue', progress: number) {
+  const opening = Math.min(1, progress / .18, (1 - progress) / .15);
+  if (opening <= 0) return;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(opening, opening);
+  ctx.shadowColor = color === 'orange' ? '#ff8b24' : '#36b9ff';
+  ctx.shadowBlur = 15;
+  ctx.fillStyle = '#090d20';
+  ctx.strokeStyle = ctx.shadowColor;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 21, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = color === 'orange' ? '#ffe1a0' : '#c4f4ff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 17, 5, 0, progress * Math.PI * 8, progress * Math.PI * 8 + Math.PI * 1.3);
+  ctx.stroke();
+  for (let i = 0; i < 7; i++) {
+    const angle = progress * Math.PI * 4 + i * Math.PI * 2 / 7;
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fillRect(Math.cos(angle) * 24 - 1, Math.sin(angle) * 10 - 2, 2, 2);
+  }
+  ctx.restore();
 }
 
 function nameplate(ctx: CanvasRenderingContext2D, player: Player, x: number, y: number, self: boolean) {
@@ -143,9 +178,6 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
   // key before it starts withdraws it, so the avatar stops on the current tile.
   const heldStepRef = useRef<number | null>(null);
   const cancelRef = useRef<Cancel | null>(null);
-  const routeRef = useRef<Route | null>(null);
-  // Server start time of a queued route step, withdrawn if a key takes over.
-  const routeStepRef = useRef<number | null>(null);
   const retryAtRef = useRef(0);
   const bounceRef = useRef<Bounce | null>(null);
   const bounceCountRef = useRef(0);
@@ -172,8 +204,6 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
     pendingRef.current = null;
     heldStepRef.current = null;
     cancelRef.current = null;
-    routeRef.current = null;
-    routeStepRef.current = null;
     retryAtRef.current = 0;
     bounceRef.current = null;
     bounceCountRef.current = 0;
@@ -254,7 +284,6 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       event.preventDefault();
       if (keysRef.current.has(event.code)) return;
       keysRef.current.add(event.code);
-      stopRoute();
       // Keep a quick tap until the next frame; browser key repeat never queues extra steps.
       queuedDirectionRef.current = direction;
     }
@@ -276,10 +305,8 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       const to = { x: from.x + dx * world.grid.size, y: from.y + dy * world.grid.size };
       const end = player.move ? player.move.startedAt + player.move.durationMs : 0;
       const pending = { id: player.id, fromX: from.x, fromY: from.y, startsAt: end > serverNowRef.current() ? end : null };
-      const route = source === 'route' ? routeRef.current : null;
       pendingRef.current = pending;
       heldStepRef.current = source === 'held' && pending.startsAt !== null ? pending.startsAt : null;
-      routeStepRef.current = route ? pending.startsAt : null;
       ownFacingRef.current = direction;
       // Animate only an accepted step. Two simultaneous claims cannot visually pass through each other.
       void onMoveRef.current(to.x, to.y, direction, sprint).then((result) => {
@@ -287,14 +314,7 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
         if (!result.accepted) {
           pendingRef.current = null;
           if (heldStepRef.current === pending.startsAt) heldStepRef.current = null;
-          if (route) {
-            if (routeStepRef.current === pending.startsAt) routeStepRef.current = null;
-            // A route never bounces. A refused tile sends it a different way.
-            if (routeRef.current !== route) return;
-            if (result.reason === 'disconnected') routeRef.current = null;
-            else if (result.reason !== 'busy' && result.reason !== 'timeout') replan(route, to);
-            retryAtRef.current = performance.now() + retryDelay;
-          } else if (result.reason === 'occupied' || result.reason === 'wall') {
+          if (result.reason === 'occupied' || result.reason === 'wall') {
             // A refused queued step bounces once the current step lands.
             const wait = pending.startsAt === null ? 0 : Math.max(0, pending.startsAt - serverNowRef.current());
             bounceRef.current = { id: player.id, direction, startedAt: performance.now() + wait };
@@ -306,56 +326,24 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       });
     }
 
-    /** Plan afresh from where the accepted steps end, avoiding a tile the server just refused. */
-    function replan(route: Route, refused: Tile) {
-      const reported = playersRef.current.find((player) => player.id === route.id);
-      const occupied = occupiedTiles(playersRef.current, route.id).add(`${refused.x},${refused.y}`);
-      const path = reported && findRoute(tail(withoutCancelled(reported)), route.destination, occupied);
-      routeRef.current = path && path.length > 1 ? { ...route, path } : null;
-    }
-
-    // The direction of the route's next tile from where the accepted steps
-    // end. A route that has arrived, or no longer leads anywhere, is dropped.
-    function routeDirection(player: Player): Direction | null {
-      const route = routeRef.current;
-      if (!route) return null;
-      const from = tail(player);
-      let index = route.path.findIndex((tile) => tile.x === from.x && tile.y === from.y);
-      if (route.id === player.id && index < 0) {
-        const path = findRoute(from, route.destination, occupiedTiles(playersRef.current, route.id));
-        if (path) {
-          route.path = path;
-          index = 0;
-        }
-      }
-      const next = index >= 0 ? route.path[index + 1] : undefined;
-      if (route.id !== player.id || !next) {
-        routeRef.current = null;
-        return null;
-      }
-      const dx = Math.sign(next.x - from.x);
-      const dy = Math.sign(next.y - from.y);
-      return (Object.keys(vectors) as Direction[]).find((direction) => vectors[direction][0] === dx && vectors[direction][1] === dy) ?? null;
-    }
-
-    // A direction key ends the walk on the tile it is crossing to, withdrawing
-    // a route step queued behind it, and the key takes over from there.
-    function stopRoute() {
-      const queued = routeStepRef.current;
-      routeRef.current = null;
-      routeStepRef.current = null;
-      if (queued !== null && serverNowRef.current() < queued) cancelHeldStep(queued);
-    }
-
     function onDoubleClick(event: MouseEvent) {
-      const reported = playersRef.current.find((player) => player.id === selfIdRef.current);
-      if (!canvas || !reported || disabledRef.current) return;
+      if (!canvas || disabledRef.current) return;
+      const self = playersRef.current.find((player) => player.id === selfIdRef.current);
+      if (!self || self.move || self.next || pendingRef.current || cancelRef.current) return;
       event.preventDefault();
       const bounds = canvas.getBoundingClientRect();
-      const target = { x: (event.clientX - bounds.left - camera.x) / camera.zoom, y: (event.clientY - bounds.top - camera.y) / camera.zoom };
-      const path = planWalk(tail(withoutCancelled(reported)), target, occupiedTiles(playersRef.current, reported.id));
-      // A new destination replaces the old one without stopping.
-      routeRef.current = path.length > 1 ? { id: reported.id, destination: path[path.length - 1], path } : null;
+      const target = snapToGrid(
+        (event.clientX - bounds.left - camera.x) / camera.zoom,
+        (event.clientY - bounds.top - camera.y) / camera.zoom,
+      );
+      if (target.x === self.x && target.y === self.y) return;
+      clearKeys();
+      bounceRef.current = null;
+      const pending = { id: self.id, fromX: self.x, fromY: self.y, startsAt: null };
+      pendingRef.current = pending;
+      void onMoveRef.current(target.x, target.y, self.facing, false, true).then((result) => {
+        if (active && pendingRef.current === pending && !result.accepted) pendingRef.current = null;
+      });
     }
 
     function cancelHeldStep(startsAt: number) {
@@ -382,7 +370,6 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       const heldStep = heldStepRef.current;
       if (heldStep !== null && time >= heldStep) heldStepRef.current = null;
       else if (heldStep !== null && (!heldKeys.length || disabledRef.current)) cancelHeldStep(heldStep);
-      if (routeStepRef.current !== null && time >= routeStepRef.current) routeStepRef.current = null;
       const cancel = cancelRef.current;
       if (cancel?.answer && reported && (!cancel.answer.accepted || playersRef.current !== cancel.answer.players) && reported.next?.startedAt !== cancel.startsAt) {
         cancelRef.current = null;
@@ -394,17 +381,15 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
         if (end.x !== pending.fromX || end.y !== pending.fromY) pendingRef.current = null;
       }
       if (bounceRef.current && (bounceRef.current.id !== self?.id || now - bounceRef.current.startedAt >= bounceDuration)) bounceRef.current = null;
-      if (self && !disabledRef.current && !pendingRef.current && !bounceRef.current && !cancelRef.current && now >= retryAtRef.current && !self.next &&
+      if (self && !disabledRef.current && !pendingRef.current && !bounceRef.current && !cancelRef.current && now >= retryAtRef.current && !self.next && !self.move?.portal &&
         (!self.move || time >= self.move.startedAt + self.move.durationMs - stepLead)) {
         const held = heldKeys.length ? directions[heldKeys[heldKeys.length - 1]] : null;
         const tapped = queuedDirectionRef.current;
-        const routed = tapped ? null : routeDirection(self);
-        const direction = tapped ?? routed ?? held;
+        const direction = tapped ?? held;
         if (direction) {
           queuedDirectionRef.current = null;
-          // Routes walk at the normal pace, even with Shift held.
-          const sprint = !routed && (keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight'));
-          requestStep(self, direction, sprint, tapped ? 'tap' : routed ? 'route' : 'held');
+          const sprint = (keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight'));
+          requestStep(self, direction, sprint, tapped ? 'tap' : 'held');
         }
       }
 
@@ -435,7 +420,7 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
       canvas.dataset.bounceCount = String(bounceCountRef.current);
       canvas.dataset.bouncing = String(Boolean(bounceRef.current));
       canvas.dataset.moving = String(Boolean(self?.move));
-      canvas.dataset.routing = String(Boolean(routeRef.current));
+      canvas.dataset.portaling = String(Boolean(self?.move?.portal));
       canvas.dataset.dancing = String(Boolean(self?.dance));
 
       if (self) {
@@ -460,6 +445,17 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
           ctx.fillRect(cornerX + (directionX < 0 ? -12 : 0), cornerY, 14, 2);
           ctx.fillRect(cornerX, cornerY + (directionY < 0 ? -12 : 0), 2, 14);
         }
+      }
+
+      // The initiator owns the pair; a swapping partner uses the same two rings.
+      for (const player of playersRef.current) {
+        const move = player.move;
+        if (!move?.portal) continue;
+        if (move.portal === 'blue' && playersRef.current.some((peer) => peer.move?.portal === 'orange' &&
+          peer.move.startedAt === move.startedAt && peer.x === move.toX && peer.y === move.toY)) continue;
+        const progress = portalProgress(player, time);
+        drawPortal(ctx, player.x, player.y, move.portal, progress);
+        drawPortal(ctx, move.toX, move.toY, move.portal === 'orange' ? 'blue' : 'orange', progress);
       }
 
       const peers: Record<string, [number, number]> = {};
@@ -487,22 +483,40 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
 
       for (const { player, position } of positioned) {
         const isSelf = player.id === selfIdRef.current;
-        const walking = Boolean(player.move);
-        const seat = !walking ? findChair(player.x, player.y) : undefined;
-        const dancing = !walking && Boolean(player.dance);
-        const seated = !walking && !dancing && player.seated && Boolean(seat);
-        if (isSelf) {
+        const portaling = Boolean(player.move?.portal);
+        const progress = portalProgress(player, time);
+        const walking = Boolean(player.move) && !portaling;
+        const seat = !player.move ? findChair(player.x, player.y) : undefined;
+        const dancing = !player.move && Boolean(player.dance);
+        const seated = !player.move && !dancing && player.seated && Boolean(seat);
+        ctx.save();
+        if (portaling) {
+          // Clip at floor level: feet disappear first while falling, head first on exit.
+          ctx.beginPath();
+          ctx.rect(position.x - 70, position.y - 180, 140, 182);
+          ctx.clip();
+          const fall = progress < .2 ? 0 : progress < .5 ? (progress - .2) / .3
+            : progress < .85 ? 1 - (progress - .5) / .35 : 0;
+          ctx.translate(position.x, position.y + fall * 85);
+          ctx.scale(1 - fall * .25, 1);
+          ctx.translate(-position.x, -position.y);
+        }
+        if (isSelf && !portaling) {
           ctx.fillStyle = '#ddedb844';
           ctx.fillRect(Math.round(position.x - 12), Math.round(position.y - 3), 24, 5);
           ctx.fillStyle = '#d3e5a9';
           ctx.fillRect(Math.round(position.x - 8), Math.round(position.y + 2), 16, 2);
         }
         drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? Math.floor(now / 120) % 2 + 1 : 0, 1, dancing ? Math.floor(Math.max(0, time - player.dance!.startedAt) / 160) % 4 + 1 : 0, player.customAvatar);
+        ctx.restore();
+        ctx.save();
+        if (portaling) ctx.globalAlpha = progress < .5 ? Math.max(0, 1 - progress / .3) : Math.max(0, (progress - .75) / .25);
         nameplate(ctx, player, position.x, position.y, isSelf);
+        ctx.restore();
       }
       // Draw bubbles last so nearby avatars cannot obscure them.
       for (const { player, position } of positioned) {
-        reactionBubble(ctx, player, position.x, position.y, time);
+        if (!player.move?.portal) reactionBubble(ctx, player, position.x, position.y, time);
       }
       ctx.restore();
       animation = requestAnimationFrame(render);
@@ -532,11 +546,11 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
   return (
     <div ref={viewportRef} className="game-world" data-testid="game-world" style={{ position: 'absolute', inset: 0, minHeight: 0, overflow: 'hidden' }}>
       <canvas ref={canvasRef} tabIndex={0} role="img"
-        aria-label="Game area. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Double-click a spot to walk there. Hold Shift to sprint up to three tiles per tick. Press Z to dance or stop dancing; walking stops dancing. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
+        aria-label="Game area. Double-click a tile to summon orange and blue portals and travel; target another player to swap places. Use W A S D or arrow keys to move one tile at a time; hold a key to keep walking. Hold Shift to sprint up to three tiles per tick. Press Z to dance or stop dancing; walking stops dancing. Scroll to zoom. Occupied tiles make you bounce back. Enter a carpet to join its conversation; leave it to disconnect. Furniture is walk-through. Walls block movement."
         data-testid="game-canvas" data-player-count={players.length}
         onPointerDown={(event) => event.currentTarget.focus({ preventScroll: true })}
         style={{ display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated', outline: 'none' }}>
-        An interactive game area with three conversation carpets. Use W A S D or arrow keys to move by tiles, double-click to walk to a spot, hold Shift to sprint, press Z to dance, and scroll to zoom.
+        An interactive game area with three conversation carpets. Double-click to travel through portals or swap with another player. Use W A S D or arrow keys to move by tiles, hold Shift to sprint, press Z to dance, and scroll to zoom.
       </canvas>
     </div>
   );

@@ -250,20 +250,6 @@ async function doubleClick(page, point) {
   assert(screen.onCanvas, 'The point ' + pointKey(point) + ' is visible on the game canvas');
   await page.mouse.dblclick(screen.x, screen.y);
 }
-async function routing(page) {
-  return (await page.locator(canvasSelector).getAttribute('data-routing')) === 'true';
-}
-async function arrive(page, target, timeout = 10000) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    await dismissPrompt(page);
-    const current = await state(page);
-    if (samePoint(current, target) && !current.moving && !await routing(page)) break;
-    assert(Date.now() < deadline, 'A double-clicked walk arrives at ' + pointKey(target) + ', now at ' + pointKey(current));
-    await page.waitForTimeout(40);
-  }
-  await waitIdle(page);
-}
 async function sentMoves(page, start) {
   return page.evaluate((start) => window.__sent.slice(start).filter((message) => message.type === 'move'), start);
 }
@@ -435,7 +421,7 @@ try {
   await bounce(alice, 'w');
   console.log('Landing-based carpet entry, chair seating, and solid wall blocking passed');
 
-  // Double-click walking: a stream of ordinary steps planned on the client.
+  // A single click still only focuses the canvas; double-clicking uses portals.
   await go(alice, { x: 648, y: 72 });
   await waitIdle(alice);
   const beforeClick = await state(alice);
@@ -444,86 +430,17 @@ try {
   await alice.mouse.click(clickPoint.x, clickPoint.y);
   await alice.waitForTimeout(grid.stepDurationMs * 2 + 200);
   assert.equal((await sentMoves(alice, sentBeforeClick)).length, 0, 'A single click sends no step');
-  assert(samePoint(beforeClick, await state(alice)) && !await routing(alice), 'A single click does not move the character');
+  assert(samePoint(beforeClick, await state(alice)), 'A single click does not move the character');
 
-  // A straight double-clicked walk is as smooth as a held key, on both screens.
-  await go(alice, { x: 456, y: 408 });
-  await waitIdle(alice);
-  let routeSentBefore = await alice.evaluate(() => window.__sent.length);
-  await Promise.all([startSampling(alice), startSampling(bob, aliceId)]);
-  await doubleClick(alice, { x: 744, y: 408 });
-  await arrive(alice, { x: 744, y: 408 });
-  const [routeSamples, watchedRouteSamples] = await Promise.all([stopSampling(alice), stopSampling(bob)]);
-  assertContinuous(routeSamples, 456, 744, grid.size / grid.stepDurationMs, 'A double-clicked walk keeps a constant pace');
-  assertContinuous(watchedRouteSamples, 456, 744, grid.size / grid.stepDurationMs, 'Another screen sees the same continuous double-clicked walk');
-  assert((await sentMoves(alice, routeSentBefore)).every((move) => !move.sprint), 'Routes walk at the normal pace');
-  console.log('Single click stays put; double-click walks smoothly on both screens');
-
-  // Bob steps onto the planned route. The refused step plans a way round him, without a bounce.
-  await go(bob, { x: 600, y: 456 });
-  await waitIdle(bob);
-  const bouncesBefore = (await state(alice)).bounceCount;
-  const resultsBefore = await alice.evaluate(() => window.__messages.length);
-  await doubleClick(alice, { x: 456, y: 408 });
-  await step(bob, 'w');
-  await arrive(alice, { x: 456, y: 408 });
-  assert(await alice.evaluate((start) => window.__messages.slice(start).some((message) => message.type === 'move-result' && message.reason === 'occupied'), resultsBefore), 'The server refused a step into the tile Bob took');
-  assert.equal((await state(alice)).bounceCount, bouncesBefore, 'A refused route step does not bounce');
-  console.log('A refused route step replans around the obstacle');
-
-  // The wall between the studio and the commons forces a detour below it.
-  await go(alice, { x: 744, y: 168 });
-  await waitIdle(alice);
-  routeSentBefore = await alice.evaluate(() => window.__sent.length);
-  await doubleClick(alice, { x: 792, y: 168 });
-  await arrive(alice, { x: 792, y: 168 });
-  const detour = await sentMoves(alice, routeSentBefore);
-  assert.equal(detour.length, 9, 'The route around the wall is the shortest one, four tiles down, across and four up');
-  assert.equal(Math.max(...detour.map((move) => move.y)), 360, 'The route passes below the end of the wall');
-  let previousTile = { x: 744, y: 168 };
-  for (const move of detour) {
-    assert(!blocked(previousTile, move), 'Every route step is walkable');
-    previousTile = move;
-  }
-
-  // A wall tile is not standable: walk to the nearest reachable tile instead.
-  await doubleClick(alice, { x: 792, y: 24 });
-  await arrive(alice, { x: 792, y: 72 });
-  console.log('Double-click routes around a wall and stops beside an unstandable tile');
-
-  // A direction key ends the walk where it is and takes over.
-  const beforeCancel = await state(alice);
-  await doubleClick(alice, { x: 1176, y: 72 });
-  await alice.waitForFunction((x) => Number(document.querySelector('[data-testid="game-canvas"]').dataset.renderX) >= x, beforeCancel.x + grid.size * 2.5, { timeout: 5000, polling: 'raf' });
-  routeSentBefore = await alice.evaluate(() => window.__sent.length);
-  await alice.keyboard.down('a');
-  await alice.waitForTimeout(35);
-  await alice.keyboard.up('a');
-  await waitIdle(alice);
-  const afterCancel = await state(alice);
-  assert(!await routing(alice), 'A direction key ends the double-clicked walk');
-  assert.equal(afterCancel.y, beforeCancel.y);
-  assert(afterCancel.x >= beforeCancel.x + grid.size && afterCancel.x <= beforeCancel.x + grid.size * 3, 'The key takes over at the tile the walk was crossing to, at ' + afterCancel.x);
-  assert.equal((await sentMoves(alice, routeSentBefore)).at(-1).facing, 'left', 'The key press is the last step taken');
-  await alice.waitForTimeout(grid.stepDurationMs * 2);
-  assert(samePoint(afterCancel, await state(alice)), 'The cancelled walk takes no further tile');
-
-  // A new double-click changes the destination without stopping.
-  await doubleClick(alice, { x: 1176, y: 72 });
-  await alice.waitForFunction((x) => Number(document.querySelector('[data-testid="game-canvas"]').dataset.renderX) >= x, afterCancel.x + grid.size * 1.5, { timeout: 5000, polling: 'raf' });
-  await startSampling(alice);
-  await doubleClick(alice, { x: afterCancel.x + grid.size * 4, y: 72 });
-  await arrive(alice, { x: afterCancel.x + grid.size * 4, y: 72 });
-  assertContinuous(await stopSampling(alice), afterCancel.x + grid.size * 2, afterCancel.x + grid.size * 4, grid.size / grid.stepDurationMs, 'Changing the destination does not stop the walk');
-  console.log('A key cancels a double-clicked walk and a new double-click redirects it');
-
-  // Arriving on a chair by double-click seats the character on its carpet.
+  // Portal arrival preserves the same chair and carpet landing rules as walking.
   const studioChair2 = world.chairs.find((chair) => chair.id === 'studio-2');
   await doubleClick(alice, studioChair2);
-  await arrive(alice, studioChair2);
+  await alice.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]').dataset.portaling === 'true');
+  await waitAt(alice, studioChair2);
+  await dismissPrompt(alice);
   await alice.waitForFunction(() => window.__players.find((player) => player.id === window.__selfId).seated);
-  assert.equal((await state(alice)).carpet, studio.id, 'Double-clicking a chair joins its carpet and sits down');
-  console.log('Double-clicking a chair walks there and sits');
+  assert.equal((await state(alice)).carpet, studio.id, 'Portal arrival on a chair joins its carpet and sits down');
+  console.log('Single click stays put; double-click portals onto a chair and joins its carpet');
   assert.deepEqual(errors, [], 'No uncaught browser errors');
   console.log('PASS grid movement', JSON.stringify({ screenshots: output, browserErrors: errors }));
 } catch (error) {

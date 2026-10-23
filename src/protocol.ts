@@ -16,7 +16,7 @@ export type MoveResult = {
   reason?: 'occupied' | 'wall' | 'busy' | 'invalid' | 'disconnected' | 'timeout';
 };
 
-export type Move = (x: number, y: number, facing: string, sprint?: boolean) => Promise<MoveResult>;
+export type Move = (x: number, y: number, facing: string, sprint?: boolean, portal?: boolean) => Promise<MoveResult>;
 /** Withdraws a queued step that has not started; accepted reports whether one was withdrawn. */
 export type CancelMove = () => Promise<MoveResult>;
 

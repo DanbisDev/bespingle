@@ -408,12 +408,17 @@ export function usePeerMedia(
     } finally { if (filterStarting.current === controller) filterStarting.current = null; }
   }, [publishCapture, strongStopped, syncSenders]);
 
+  const [whiteboardActive, setWhiteboardActive] = useState(false);
+  const whiteboardRef = useRef(false);
+
   const stopScreen = useCallback(() => {
     screenRequest.current += 1;
     screen.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
     screen.current = null;
     setScreenStream(null);
     setScreenBusy(false);
+    setWhiteboardActive(false);
+    whiteboardRef.current = false;
     publishCapture(capture.current);
     void syncSenders();
   }, [publishCapture, syncSenders]);
@@ -456,6 +461,28 @@ export function usePeerMedia(
     } finally {
       if (isCurrent()) setScreenBusy(false);
     }
+  }, [publishCapture, stopScreen, syncSenders]);
+
+  const startWhiteboard = useCallback((stream: MediaStream) => {
+    const owner = context.current.self;
+    if (!owner?.carpetId) return;
+    // Block if a real screen share is active, but allow replacing a previous whiteboard stream
+    // (handles React StrictMode double-mount creating a second stream).
+    if (screen.current && !whiteboardRef.current) return;
+    if (screen.current) {
+      // Replace previous whiteboard stream — detach onended so stopScreen isn't triggered.
+      screen.current.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+    }
+    const track = stream.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live') return;
+    track.contentHint = 'detail';
+    track.onended = stopScreen;
+    screen.current = stream;
+    setScreenStream(stream);
+    setWhiteboardActive(true);
+    whiteboardRef.current = true;
+    publishCapture(capture.current);
+    void syncSenders();
   }, [publishCapture, stopScreen, syncSenders]);
 
   const chooseMedia = useCallback(async (mic: boolean, camera: boolean): Promise<boolean> => {
@@ -652,5 +679,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }
