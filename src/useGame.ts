@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Player } from './world';
-import type { CancelMove, ChatMessage, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
+import type { CancelMove, ChatMessage, ScrimbaState, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
 
 type PendingMove = { resolve: (result: MoveResult) => void; timer: ReturnType<typeof setTimeout> };
 
 export function useGame() {
+  const [scrimbaGames, setScrimbaGames] = useState<Record<string, ScrimbaState>>({});
+  const [scrimbaOpen, setScrimbaOpen] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const currentCarpet = useRef('');
   const currentSelf = useRef('');
@@ -65,6 +67,8 @@ export function useGame() {
     pendingSignals.current = [];
     currentCarpet.current = currentSelf.current = '';
     setMessages([]);
+    setScrimbaGames({});
+    setScrimbaOpen('');
     clearMoves();
     current?.close();
     setPlayers([]);
@@ -78,6 +82,8 @@ export function useGame() {
     pendingSignals.current = [];
     currentCarpet.current = currentSelf.current = '';
     setMessages([]);
+    setScrimbaGames({});
+    setScrimbaOpen('');
     clearMoves();
     clockOffset.current = Date.now() - performance.now();
     clockReady.current = false;
@@ -102,7 +108,11 @@ export function useGame() {
         }
         if (message.type === 'welcome') currentSelf.current = message.selfId;
         const carpetId = message.players.find((player) => player.id === currentSelf.current)?.carpetId ?? '';
-        if (carpetId !== currentCarpet.current) setMessages([]);
+        if (carpetId !== currentCarpet.current) {
+          setMessages([]);
+          setScrimbaGames({});
+          setScrimbaOpen('');
+        }
         currentCarpet.current = carpetId;
         setPlayers(message.players);
         if (message.type === 'welcome') {
@@ -112,6 +122,11 @@ export function useGame() {
       } else if (message.type === 'chat') {
         if (currentCarpet.current && message.carpetId === currentCarpet.current) {
           setMessages((current) => [...current.slice(-99), message]);
+          if (message.scrimbaId && message.from === currentSelf.current) setScrimbaOpen(message.scrimbaId);
+        }
+      } else if (message.type === 'scrimba-state') {
+        if (message.carpetId === currentCarpet.current) {
+          setScrimbaGames((current) => ({ ...current, [message.id]: message }));
         }
       } else if (message.type === 'move-result') {
         const pending = pendingMoves.current.get(message.requestId);
@@ -133,6 +148,8 @@ export function useGame() {
       pendingSignals.current = [];
       currentCarpet.current = currentSelf.current = '';
       setMessages([]);
+      setScrimbaGames({});
+      setScrimbaOpen('');
       clearMoves();
       setStatus('lost');
       setPlayers([]);
@@ -149,5 +166,11 @@ export function useGame() {
     clearMoves();
   }, [clearMoves]);
 
-  return { messages, players, selfId, status, error, join, leave, send, move, cancelMove, serverNow, signalHandler };
+  const openScrimba = (id: string) => {
+    setError('');
+    setScrimbaOpen(id);
+    send({ type: 'scrimba-join', id });
+  };
+
+  return { scrimbaGames, scrimbaOpen, openScrimba, closeScrimba: () => setScrimbaOpen(''), messages, players, selfId, status, error, join, leave, send, move, cancelMove, serverNow, signalHandler };
 }

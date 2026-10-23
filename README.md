@@ -59,6 +59,17 @@ To start them separately, run `npm run dev:backend` and
   their content; each browser keeps at most 100 messages in memory, cleared
   when leaving the carpet, disconnecting, or reloading. Chat is not written to
   browser storage. Recipients can still copy messages they receive.
+- Type **/scrimba** in carpet chat to start an emoji guessing game. Your board
+  opens immediately and others on the carpet get a **Launch Scrimba** invitation.
+  Find the shared five-emoji sequence in six guesses. Solutions and guesses use
+  unique emojis. Green means the correct position; yellow means it belongs
+  elsewhere. Dark tiles mark emojis absent from the puzzle and disable those
+  keys for later guesses. Each player solves independently. Click a
+  player's name to inspect their board: only colors are shared until you finish
+  your own puzzle, then the emojis and solution are revealed. Close and reopen
+  from the invitation to continue. Scrimba uses WebSocket events and transient
+  server/browser memory, with no database or browser storage. Games expire after
+  two hours or a server restart; leaving the office loses your player identity.
 - Click **Share screen** on a carpet to choose a tab, window, or display. Everyone
   on that carpet can watch alongside your camera; use **Expand** for a larger view.
   Stop with **Stop sharing** or the browser’s sharing control. Leaving the carpet
@@ -109,6 +120,10 @@ survive restarts. There is no bucket listing or avatar deletion API.
 Connection syntax follows the official
 [Codex MCP instructions](https://developers.openai.com/learn/docs-mcp) and
 [Claude Code MCP instructions](https://code.claude.com/docs/en/mcp).
+
+## Scrimba
+
+![Scrimba emoji guessing board and keyboard](docs/scrimba.png)
 
 ## Direct audio and video
 
@@ -242,6 +257,7 @@ npx playwright install chromium
 npm run test:grid
 npm run test:browser
 npm run test:chat
+npm run test:scrimba
 npm run test:backgrounds
 npm run test:audio
 ```
@@ -252,6 +268,7 @@ Alternatively, use an existing Chrome installation:
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:grid
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:browser
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:chat
+CHROME_PATH=/absolute/path/to/google-chrome npm run test:scrimba
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:backgrounds
 CHROME_PATH=/absolute/path/to/google-chrome npm run test:audio
 ```
