@@ -215,6 +215,8 @@ try {
     const current = await context.newPage();
     current.on('pageerror', (error) => errors.push(error.message));
     if (init) await current.addInitScript(init, arg);
+    // Each stands in for another browser, so none inherits the last page's tile.
+    await current.addInitScript(() => localStorage.removeItem('bespingle_session'));
     await current.goto(process.env.BESPINGLE_URL || 'http://localhost:5555');
     await current.getByLabel('Your display name').fill(name);
     await current.getByRole('button', { name: 'Enter the office', exact: true }).click();

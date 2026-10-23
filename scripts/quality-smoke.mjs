@@ -264,9 +264,14 @@ try {
   console.log('Audio only hides the camera, keeps audio and screen, and returns without rejoining');
 
   await chooseQuality(carol, 'Low');
+  // Leaving first, so the reload shows the join form rather than rejoining.
+  await carol.getByRole('button', { name: 'Leave office', exact: true }).click();
   await carol.reload();
   await carol.getByLabel('Your display name').fill('Carol');
   await carol.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  // Entering again returns to the last tile, on the carpet, which asks at once.
+  await carol.getByRole('button', { name: 'Neither', exact: false }).click();
+  await carol.getByRole('dialog').waitFor({ state: 'hidden' });
   await carol.getByRole('button', { name: 'Video settings', exact: true }).click();
   assert(await carol.getByRole('radio', { name: 'Low', exact: true }).isChecked(), 'Video quality survives a reload');
   console.log('The video quality choice survives a reload');

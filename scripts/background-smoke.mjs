@@ -109,6 +109,12 @@ try {
     await page.goto(url);
     await page.getByLabel('Your display name').fill('Background test');
     await page.getByRole('button', { name: 'Enter the office', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+    // Entering again returns to the last tile; on a carpet that asks at once.
+    if (await page.locator('.call-strip.has-conversation').count()) {
+      await page.getByRole('button', { name: 'Neither', exact: false }).click();
+      await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    }
     await page.getByRole('button', { name: 'Camera background', exact: true }).click();
   };
   const pressed = (name) => name === 'custom' ? page.locator('.background-upload[aria-pressed="true"]') : page.getByRole('button', { name, exact: true }).and(page.locator('[aria-pressed="true"]'));

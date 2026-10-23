@@ -141,6 +141,14 @@ h1, h2, p { margin: 0; }
 .device-group.enabled .device-more { border-left-color: #2b5653; }
 .device-group > .device-button:hover:not(:disabled), .device-group > .device-button:focus-visible { position: relative; z-index: 1; }
 .hud-divider { height: 25px; width: 1px; background: #303c50; margin: 0 5px; }
+.reconnecting-hud { justify-content: center; gap: 16px; }
+.reconnecting-banner { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.reconnecting-banner strong { color: var(--amber); font-size: 13px; }
+.reconnecting-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); animation: reconnecting-pulse 1.2s ease-in-out infinite; }
+@keyframes reconnecting-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .reconnecting-dot { animation: none; } }
+.reconnecting-hud .secondary-button { padding: 8px 16px; }
+@media (max-width: 560px) { .reconnecting-banner span:not(.reconnecting-dot) { display: none; } }
 .leave-button { width: 36px; height: 36px; border: 1px solid #614044; background: #36232d; color: #f0b6ae; display: grid; place-items: center; border-radius: 8px; }
 .leave-button:hover:not(:disabled) { border-color: #a8686a; background: #54313c; }
 .leave-button svg { height: 17px; width: 17px; }

@@ -153,6 +153,7 @@ export default function App() {
   const [selectedTile, setSelectedTile] = useState('');
   const previousCarpet = useRef('');
   const connected = game.status === 'connected';
+  const reconnecting = game.status === 'reconnecting';
   const members = self?.carpetId ? game.players.filter((player) => player.carpetId === self.carpetId).sort((a, b) => a.id === self.id ? -1 : b.id === self.id ? 1 : a.name.localeCompare(b.name)) : [];
 
   const screenMembers = members.filter((player) => player.id === self?.id ? !!media.screenStream : player.screen);
@@ -247,7 +248,10 @@ export default function App() {
           {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} />}
         </div>
       </div>
-      <footer className="game-hud">
+      {reconnecting ? <footer className="game-hud reconnecting-hud">
+        <div className="reconnecting-banner" role="status"><span className="reconnecting-dot" aria-hidden="true" /><strong>Reconnecting…</strong><span>You’ll be back where you were as soon as the office answers.</span></div>
+        <button type="button" className="secondary-button" onClick={game.leave}>Leave</button>
+      </footer> : <footer className="game-hud">
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
         <div className="media-controls"><div className={`device-group ${self?.mic ? 'enabled' : ''}`} role="group" aria-label="Microphone">
             <button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, media.cameraOn); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
@@ -266,11 +270,11 @@ export default function App() {
         <div className="emoji-bar" role="group" aria-label="Emoji reactions">
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
-      </footer>
+      </footer>}
       {bannerError && <div key={game.serverError ? `server-${game.serverErrorId}` : 'media'} className="inline-error" role="alert"><span>{bannerError}</span><button type="button" className="inline-error-close" aria-label="Dismiss error" title="Dismiss" onClick={dismissBanner}><Icon name="close" /></button></div>}
     </main>
 
-    {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
+    {!connected && !reconnecting && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
       <span className="welcome-pixel" aria-hidden="true"><Avatar avatar={avatar} customAvatar={customAvatar} size={88} /></span>
       <form onSubmit={join}><label className="field-label" htmlFor="display-name">Your display name</label><input id="display-name" maxLength={32} required autoComplete="off" placeholder="What should we call you?" value={name} onChange={(event) => setName(event.target.value)} disabled={game.status === 'connecting'} />
         {picker}

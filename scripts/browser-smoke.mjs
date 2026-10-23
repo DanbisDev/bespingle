@@ -515,6 +515,7 @@ try {
   assert(wire.types.every((type) => ['join', 'move', 'media', 'profile', 'signal'].includes(type)));
   assert(wire.rtcConfig.iceServers.every((server) => JSON.stringify(server.urls).includes('stun:') && !JSON.stringify(server.urls).includes('turn:')));
   // Leaving the game, rather than a carpet, ends every capture and clears the choice.
+  const lastTile = await position(alice);
   await alice.getByRole('button', { name: 'Leave office', exact: true }).click();
   await alice.getByRole('button', { name: 'Enter the office', exact: true }).waitFor();
   await alice.waitForFunction(() => window.__pcs.every((pc) => pc.connectionState === 'closed') && window.__streams.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended')));
@@ -523,13 +524,14 @@ try {
   await alice.getByLabel('Your display name').fill('Alice Updated');
   await alice.getByRole('button', { name: 'Enter the office', exact: true }).click();
   await alice.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+  // Entering from the form returns to the last tile, on the carpet, so it asks at once.
+  await alice.waitForFunction(({ x, y }) => {
+    const canvas = document.querySelector('[data-testid="game-canvas"]');
+    return Number(canvas.dataset.x) === x && Number(canvas.dataset.y) === y;
+  }, lastTile, { timeout: 2500 });
+  await choose(alice, 'Neither');
   await expectDevices(alice, false, false);
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'A new game starts with both devices off');
-  await alice.locator('[data-testid="game-canvas"]').focus();
-  await alice.keyboard.down('w');
-  await alice.getByRole('dialog').waitFor();
-  await alice.keyboard.up('w');
-  await choose(alice, 'Neither');
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'The next game asks again and Neither opens no devices');
 
   await alice.evaluate(() => { window.__holdScreen = true; });
