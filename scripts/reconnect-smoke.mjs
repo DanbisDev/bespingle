@@ -300,7 +300,8 @@ try {
 
   // A rejoin the server refuses lands on the join form with its reason, out of the office.
   // A remembered name the server rejects stands in for a full office, which the real map
-  // is too large to fill.
+  // is too large to fill. Retries resend the name held in memory, so the refresh is what
+  // rejoins with the edited one.
   const refusedOffice = await context();
   const refused = await open(refusedOffice);
   await refused.getByLabel('Your display name').fill('Uma');
@@ -311,11 +312,10 @@ try {
     const profile = JSON.parse(decodeURIComponent(part.split('=').slice(1).join('=')));
     document.cookie = `bespingle_profile=${encodeURIComponent(JSON.stringify({ ...profile, name: 'U\u0007ma' }))}; Path=/`;
   });
-  await stopServer();
-  await banner(refused).waitFor();
-  await startServer(buildA);
+  await refused.reload();
   await joinForm(refused);
   await refused.getByRole('alert').filter({ hasText: 'display name cannot contain control characters' }).waitFor();
+  assert.deepEqual(await refused.evaluate(() => window.__joins.map(({ name }) => name)), ['U\u0007ma'], 'The refresh rejoined with the remembered name');
   assert.equal(await banner(refused).count(), 0, 'A refused rejoin leaves the reconnecting state');
   const afterRefusal = (await sockets(refused)).length;
   await refused.waitForTimeout(3000);
