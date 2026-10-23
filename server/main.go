@@ -215,6 +215,7 @@ type player struct {
 	Mic          bool      `json:"mic"`
 	Camera       bool      `json:"camera"`
 	Screen       bool      `json:"screen"`
+	Whiteboard   bool      `json:"whiteboard"`
 }
 
 type description struct {
@@ -257,11 +258,12 @@ type moveResult struct {
 }
 
 type client struct {
-	conn     *websocket.Conn
-	send     chan []byte
-	done     chan struct{}
-	stopOnce sync.Once
-	player   player
+	conn       *websocket.Conn
+	send       chan []byte
+	done       chan struct{}
+	stopOnce   sync.Once
+	player     player
+	lastDrawAt int64
 }
 
 func (c *client) stop() {
@@ -424,6 +426,7 @@ func (h *hub) settleMovesLocked(now time.Time) bool {
 			c.player.CarpetID = h.world.carpetAt(m.ToX, m.ToY)
 			if previousCarpet != c.player.CarpetID {
 				c.player.Screen = false
+				c.player.Whiteboard = false
 			}
 			c.player.Seated = h.world.isSeated(m.ToX, m.ToY)
 			c.player.Move, c.player.Next = c.player.Next, nil
@@ -723,16 +726,18 @@ func (h *hub) handle(c *client, data []byte) error {
 		h.broadcastLocked()
 	case "media":
 		var msg struct {
-			Type   string `json:"type"`
-			Mic    *bool  `json:"mic"`
-			Camera *bool  `json:"camera"`
-			Screen bool   `json:"screen"`
+			Type       string `json:"type"`
+			Mic        *bool  `json:"mic"`
+			Camera     *bool  `json:"camera"`
+			Screen     bool   `json:"screen"`
+			Whiteboard bool   `json:"whiteboard"`
 		}
 		if err := strictDecode(data, &msg); err != nil || msg.Mic == nil || msg.Camera == nil {
 			return errors.New("invalid media status message")
 		}
 		c.player.Mic, c.player.Camera = *msg.Mic, *msg.Camera
 		c.player.Screen = msg.Screen && c.player.CarpetID != ""
+		c.player.Whiteboard = msg.Whiteboard && c.player.CarpetID != ""
 		h.broadcastLocked()
 	case "chat":
 		var msg struct {
@@ -766,6 +771,97 @@ func (h *hub) handle(c *client, data []byte) error {
 			}
 		}
 		if dropped {
+			h.broadcastLocked()
+		}
+	case "draw":
+		var msg struct {
+			Type     string            `json:"type"`
+			CarpetID string            `json:"carpetId"`
+			Segments []json.RawMessage `json:"segments"`
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return errors.New("invalid draw message")
+		}
+		if c.player.CarpetID == "" || msg.CarpetID != c.player.CarpetID {
+			return errors.New("join this carpet before sending draw events")
+		}
+		if !c.player.Whiteboard {
+			return errors.New("only whiteboard participants can draw")
+		}
+		if len(msg.Segments) == 0 || len(msg.Segments) > 200 {
+			return errors.New("draw batch must contain 1–200 segments")
+		}
+		// Check if the batch is snapshot-related (exempt from rate limiting).
+		isSnapshotBatch := false
+		for _, raw := range msg.Segments {
+			var peek struct{ Op string `json:"op"` }
+			if json.Unmarshal(raw, &peek) == nil && (peek.Op == "snapshot" || peek.Op == "snapshot-request") {
+				isSnapshotBatch = true
+				break
+			}
+		}
+		now := h.now().UnixMilli()
+		if !isSnapshotBatch && now-c.lastDrawAt < 40 {
+			return nil
+		}
+		if !isSnapshotBatch {
+			c.lastDrawAt = now
+		}
+		for _, raw := range msg.Segments {
+			var seg struct {
+				Op    string   `json:"op"`
+				X     *float64 `json:"x,omitempty"`
+				Y     *float64 `json:"y,omitempty"`
+				Color string   `json:"color,omitempty"`
+				Width *float64 `json:"width,omitempty"`
+			}
+			if err := json.Unmarshal(raw, &seg); err != nil {
+				return errors.New("invalid draw segment")
+			}
+			switch seg.Op {
+			case "begin":
+				if seg.X == nil || seg.Y == nil || seg.Color == "" || seg.Width == nil {
+					return errors.New("begin segment missing fields")
+				}
+				if !finite(*seg.X) || !finite(*seg.Y) || *seg.X < 0 || *seg.X > 1280 || *seg.Y < 0 || *seg.Y > 720 {
+					return errors.New("draw coordinates out of bounds")
+				}
+				if *seg.Width < 1 || *seg.Width > 64 {
+					return errors.New("draw width out of range")
+				}
+				if !drawColorPattern.MatchString(seg.Color) {
+					return errors.New("invalid draw color")
+				}
+			case "move":
+				if seg.X == nil || seg.Y == nil {
+					return errors.New("move segment missing coordinates")
+				}
+				if !finite(*seg.X) || !finite(*seg.Y) || *seg.X < 0 || *seg.X > 1280 || *seg.Y < 0 || *seg.Y > 720 {
+					return errors.New("draw coordinates out of bounds")
+				}
+			case "clear":
+			case "snapshot-request":
+			case "snapshot":
+				if len(raw) > 60000 {
+					return errors.New("snapshot too large")
+				}
+			default:
+				return errors.New("unknown draw segment op")
+			}
+		}
+		drawOut := marshal(struct {
+			Type     string            `json:"type"`
+			CarpetID string            `json:"carpetId"`
+			From     string            `json:"from"`
+			Segments []json.RawMessage `json:"segments"`
+		}{"draw", c.player.CarpetID, c.player.ID, msg.Segments})
+		drawDropped := false
+		for _, peer := range h.clients {
+			if peer.player.CarpetID == c.player.CarpetID && !h.enqueueLocked(peer, drawOut) {
+				drawDropped = true
+			}
+		}
+		if drawDropped {
 			h.broadcastLocked()
 		}
 	case "signal":
@@ -892,6 +988,7 @@ func (c *client) writeLoop() {
 // Vite includes a content hash in built asset names. Only those files can be
 // cached indefinitely; HTML must be revalidated to discover each deployment.
 var hashedAssetName = regexp.MustCompile(`-[A-Za-z0-9_-]{8,}\.[^.]+$`)
+var drawColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
 type frontendHandler struct {
 	root *os.Root

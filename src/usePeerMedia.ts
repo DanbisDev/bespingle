@@ -291,6 +291,7 @@ export function usePeerMedia(
       mic: stream?.getAudioTracks().some((track) => track.readyState === 'live') ?? false,
       screen: screen.current?.getVideoTracks().some((track) => track.readyState === 'live') ?? false,
       camera: camera && qualityChoice.current !== 'audio',
+      whiteboard: whiteboardRef.current,
     });
   }, [send]);
 
@@ -427,6 +428,19 @@ export function usePeerMedia(
     publishCapture(capture.current);
     void syncSenders();
   }, [publishCapture, stopScreen, syncSenders]);
+
+  const joinWhiteboard = useCallback(() => {
+    if (!context.current.self?.carpetId) return;
+    whiteboardRef.current = true;
+    setWhiteboardActive(true);
+    publishStatus();
+  }, [publishStatus]);
+
+  const leaveWhiteboard = useCallback(() => {
+    whiteboardRef.current = false;
+    setWhiteboardActive(false);
+    publishStatus();
+  }, [publishStatus]);
 
   const chooseMedia = useCallback(async (mic: boolean, camera: boolean): Promise<boolean> => {
     const playerId = context.current.self?.id;
@@ -568,5 +582,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseSuppression, noiseSupported, noiseActive, chooseNoiseSuppression, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { quality, chooseQuality, cameraOn, noiseSuppression, noiseSupported, noiseActive, chooseNoiseSuppression, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, joinWhiteboard, leaveWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }

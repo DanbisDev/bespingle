@@ -59,7 +59,7 @@ function Dialog({ children, title, description, className = '' }: { children: Re
   </div></div>;
 }
 
-function VideoTile({ player, stream, local, media, screen = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
+function VideoTile({ player, stream, local, media, screen = false, selected, onSelect, onJoinWhiteboard }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean; onJoinWhiteboard?: () => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const speaking = useSpeaking(stream, !screen && player.mic && (local || media?.status === 'connected'));
   const [playBlocked, setPlayBlocked] = useState(false);
@@ -74,9 +74,10 @@ function VideoTile({ player, stream, local, media, screen = false, selected, onS
   return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
     <div className="video-avatar"><Avatar avatar={player.avatar} customAvatar={player.customAvatar} size={64} /></div>
     <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
-    <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
+    <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · {player.whiteboard ? 'Whiteboard' : 'Screen'}</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
     {connectionLabel && !local && <span className="connection-label">{connectionLabel}</span>}
     <button className="select-video" aria-label={`${selected ? 'Unpin' : 'Pin'} ${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} aria-pressed={selected} onClick={onSelect}><span className="pin-label">{selected ? 'Unpin' : 'Pin'}</span></button>
+    {onJoinWhiteboard && <button className="join-whiteboard" onClick={(event) => { event.stopPropagation(); onJoinWhiteboard(); }}>Join board</button>}
     {playBlocked && !local && <button className="play-audio" onClick={(event) => { event.stopPropagation(); void video.current?.play().then(() => setPlayBlocked(false)).catch(() => {}); }}>Play audio</button>}
   </div>;
 }
@@ -108,6 +109,7 @@ export default function App() {
   const [editingBackground, setEditingBackground] = useState(false);
   const [editingMicrophone, setEditingMicrophone] = useState(false);
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [whiteboardMode, setWhiteboardMode] = useState<'host' | 'collaborator'>('host');
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [selectedTile, setSelectedTile] = useState('');
@@ -153,6 +155,16 @@ export default function App() {
     wasWhiteboardActive.current = media.whiteboardActive;
   }, [media.whiteboardActive]);
 
+  // Auto-close collaborator overlay when the host stops sharing the whiteboard.
+  useEffect(() => {
+    if (whiteboardMode !== 'collaborator' || !whiteboardOpen) return;
+    const hasHost = members.some((p) => p.screen && p.whiteboard);
+    if (!hasHost) {
+      media.leaveWhiteboard();
+      setWhiteboardOpen(false);
+    }
+  }, [whiteboardMode, whiteboardOpen, members, media.leaveWhiteboard]);
+
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
   const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
 
@@ -174,7 +186,7 @@ export default function App() {
                 <button className="expand-button" aria-label={expanded ? 'Return to game' : 'Enlarge conversation videos'} onClick={() => { setSelectedTile(''); setExpanded((current) => !current); }}><Icon name={expanded ? 'close' : 'expand'} /><span>{expanded ? 'Back to game' : 'Expand'}</span></button>
               </div>
               <div className={`video-layout ${activeTile ? 'has-pin' : 'gallery'}`}><div className="video-grid" aria-label="Pin or unpin a video">
-                {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
+                {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} onJoinWhiteboard={player.whiteboard && player.id !== self?.id && !whiteboardOpen ? () => { media.joinWhiteboard(); setWhiteboardMode('collaborator'); setWhiteboardOpen(true); } : undefined} />)}
                 {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
               </div></div>
               {expanded && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
@@ -192,7 +204,7 @@ export default function App() {
           <button className={media.cameraOn ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={media.cameraOn ? 'Turn camera off' : 'Turn camera on'} aria-pressed={media.cameraOn} onClick={() => { void media.chooseMedia(self?.mic ?? false, !media.cameraOn); }}><Icon name="camera" off={!media.cameraOn} /><span>{media.cameraOn ? media.quality === 'audio' ? 'Camera paused' : 'Camera on' : 'Camera off'}</span></button>
           <button className={`device-button ${media.background !== 'none' ? 'enabled' : ''}`} disabled={!connected || media.busy || isMediaPrompt} aria-label="Camera background" onClick={() => setEditingBackground(true)}><Icon name="camera" /><span>Background</span></button>
           <button className={`device-button ${media.screenStream && !media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || media.screenBusy || media.whiteboardActive || isMediaPrompt} aria-label={media.screenStream && !media.whiteboardActive ? 'Stop sharing screen' : 'Share screen'} aria-pressed={!!media.screenStream && !media.whiteboardActive} title={carpet ? 'Share a tab, window, or screen with this carpet' : 'Walk onto a carpet to share your screen'} onClick={() => { if (media.screenStream) media.stopScreen(); else void media.startScreen(); }}><Icon name="screen" /><span>{media.screenBusy ? 'Choosing screen…' : media.screenStream && !media.whiteboardActive ? 'Stop sharing' : 'Share screen'}</span></button>
-          <button className={`device-button ${media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || (!!media.screenStream && !media.whiteboardActive) || isMediaPrompt} aria-label={media.whiteboardActive ? 'Close whiteboard' : 'Open whiteboard'} aria-pressed={media.whiteboardActive} title={carpet ? 'Draw on a shared whiteboard' : 'Walk onto a carpet to use the whiteboard'} onClick={() => { if (media.whiteboardActive) { media.stopScreen(); } else { setWhiteboardOpen(true); } }}><Icon name="screen" /><span>{media.whiteboardActive ? 'Close board' : 'Whiteboard'}</span></button>
+          <button className={`device-button ${media.whiteboardActive ? 'enabled' : ''}`} disabled={!connected || !carpet || (!!media.screenStream && !media.whiteboardActive) || isMediaPrompt} aria-label={media.whiteboardActive ? 'Close whiteboard' : 'Open whiteboard'} aria-pressed={media.whiteboardActive} title={carpet ? 'Draw on a shared whiteboard' : 'Walk onto a carpet to use the whiteboard'} onClick={() => { if (media.whiteboardActive) { if (whiteboardMode === 'host') media.stopScreen(); else media.leaveWhiteboard(); setWhiteboardOpen(false); } else { setWhiteboardMode('host'); setWhiteboardOpen(true); } }}><Icon name="screen" /><span>{media.whiteboardActive ? whiteboardMode === 'host' ? 'Close board' : 'Leave board' : 'Whiteboard'}</span></button>
           <span className="hud-divider" /><button className="leave-button" disabled={!connected} onClick={game.leave} aria-label="Leave office"><Icon name="exit" /></button>
         </div>
         <div className="movement-hint"><span><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>WASD or arrow keys to walk<small>Double-click to portal / swap · Shift to sprint · Z to dance · Scroll to zoom</small></span></div>
@@ -244,6 +256,6 @@ export default function App() {
       </div>{media.busy && <p className="permission-hint" role="status">Check your browser's device permission request…</p>}{media.error && <p className="form-error" role="alert">{media.error}</p>}<p className="media-note">Device settings stay the same until you change them or leave the game.</p>
     </Dialog>}
 
-    {whiteboardOpen && <Whiteboard onStream={(stream) => media.startWhiteboard(stream)} onClose={() => { if (media.whiteboardActive) media.stopScreen(); setWhiteboardOpen(false); }} />}
+    {whiteboardOpen && <Whiteboard mode={whiteboardMode} onStream={whiteboardMode === 'host' ? (stream) => media.startWhiteboard(stream) : undefined} onClose={() => { if (whiteboardMode === 'host' && media.whiteboardActive) media.stopScreen(); else if (whiteboardMode === 'collaborator') media.leaveWhiteboard(); setWhiteboardOpen(false); }} send={game.send} carpetId={self?.carpetId ?? ''} selfId={game.selfId} onRegisterDrawHandler={(handler) => { game.drawHandler.current = handler; }} />}
   </div>;
 }

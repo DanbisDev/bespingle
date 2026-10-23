@@ -300,3 +300,5 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .whiteboard-tool[aria-pressed="true"] { background: #183b3c; border-color: #376c68; color: #a7eee0; }
 .whiteboard-close { margin-left: auto; }
 .whiteboard-canvas { display: block; width: 100%; height: auto; aspect-ratio: 16/9; cursor: crosshair; touch-action: none; background: #1a2233; }
+.join-whiteboard { position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 6px 16px; font-size: 12px; font-weight: 600; cursor: pointer; z-index: 2; white-space: nowrap; }
+.join-whiteboard:hover { filter: brightness(1.15); }
