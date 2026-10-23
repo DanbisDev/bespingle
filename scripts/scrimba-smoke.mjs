@@ -225,7 +225,10 @@ try {
   await alice.screenshot({ path: `${output}/scrimba-solved.png`, fullPage: true });
   // Closing does not reset progress; invitations can reopen a finished board.
   await panel(alice).getByRole('button', { name: 'Close Scrimba', exact: true }).click();
-  await alice.getByRole('button', { name: 'Launch Scrimba', exact: true }).click();
+  await go(alice, { x: 504, y: 408 });
+  await go(alice, { x: 504, y: 312 });
+  assert.equal(await alice.getByRole('button', { name: 'Launch Scrimba', exact: true }).count(), 0, 'Chat history stays cleared');
+  await alice.getByRole('button', { name: 'Resume Scrimba 1', exact: true }).click();
   await panel(alice).getByText('You solved it! 🎉', { exact: true }).waitFor();
   await alice.keyboard.press('Escape');
   await panel(alice).waitFor({ state: 'hidden' });

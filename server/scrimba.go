@@ -28,7 +28,12 @@ var scrimbaRules = func() scrimbaConfig {
 	return rules
 }()
 
-const scrimbaLifetime = 2 * time.Hour
+const (
+	scrimbaLifetime           = 2 * time.Hour
+	maxScrimbaGames           = 32
+	maxScrimbaGamesPerCreator = 3
+	maxScrimbaPlayers         = 64
+)
 
 type scrimbaGuess struct {
 	Emojis []string `json:"emojis,omitempty"`
@@ -50,11 +55,12 @@ type scrimbaGame struct {
 	Players  map[string]*scrimbaPlayer
 }
 type scrimbaState struct {
-	Type     string          `json:"type"`
-	ID       string          `json:"id"`
-	CarpetID string          `json:"carpetId"`
-	Players  []scrimbaPlayer `json:"players"`
-	Solution []string        `json:"solution,omitempty"`
+	ExpiresAt int64           `json:"expiresAt"`
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	CarpetID  string          `json:"carpetId"`
+	Players   []scrimbaPlayer `json:"players"`
+	Solution  []string        `json:"solution,omitempty"`
 }
 
 // Exact matches consume their emoji first; remaining copies can be yellow once.
@@ -83,7 +89,7 @@ func scoreScrimba(guess, solution []string) []string {
 
 func (g *scrimbaGame) stateFor(id string) scrimbaState {
 	viewer := g.Players[id]
-	out := scrimbaState{Type: "scrimba-state", ID: g.ID, CarpetID: g.CarpetID, Players: []scrimbaPlayer{}}
+	out := scrimbaState{ExpiresAt: g.Created.Add(scrimbaLifetime).UnixMilli(), Type: "scrimba-state", ID: g.ID, CarpetID: g.CarpetID, Players: []scrimbaPlayer{}}
 	if viewer != nil && viewer.Done {
 		out.Solution = g.Solution
 	}
@@ -117,23 +123,61 @@ func (h *hub) publishScrimbaLocked(g *scrimbaGame) {
 	}
 }
 
+// Disconnected identities cannot reconnect, so their records are no longer useful.
+// Run before capacity checks, including for clients dropped by a full send queue.
+func (h *hub) pruneScrimbaLocked() {
+	for id, g := range h.scrimba {
+		for playerID := range g.Players {
+			if h.clients[playerID] == nil {
+				delete(g.Players, playerID)
+			}
+		}
+		if len(g.Players) == 0 || h.now().Sub(g.Created) >= scrimbaLifetime {
+			delete(h.scrimba, id)
+		}
+	}
+}
+
 func (h *hub) startScrimbaLocked(c *client) error {
 	if h.scrimba == nil {
 		h.scrimba = map[string]*scrimbaGame{}
 	}
-	for id, g := range h.scrimba {
-		if h.now().Sub(g.Created) >= scrimbaLifetime {
-			delete(h.scrimba, id)
-		}
-	}
-	// Bound transient memory without evicting a game people are playing.
-	if len(h.scrimba) >= 32 {
-		return errors.New("too many Scrimba games; try again later")
-	}
+	h.pruneScrimbaLocked()
+	created := 0
 	for _, g := range h.scrimba {
-		if g.Creator == c.player.ID && h.now().Sub(g.Created) < 10*time.Second {
-			return errors.New("wait a moment before starting another Scrimba")
+		if g.Creator == c.player.ID {
+			if creator := g.Players[c.player.ID]; creator != nil && !creator.Done {
+				created++
+			}
+			if h.now().Sub(g.Created) < 10*time.Second {
+				return errors.New("wait a moment before starting another Scrimba")
+			}
 		}
+	}
+	if created >= maxScrimbaGamesPerCreator {
+		return errors.New("finish one of your three active Scrimba games before starting another")
+	}
+	if len(h.scrimba) >= maxScrimbaGames {
+		// Finished boards remain inspectable until capacity is needed for a new game.
+		var oldest *scrimbaGame
+		for _, game := range h.scrimba {
+			finished := true
+			for _, p := range game.Players {
+				if !p.Done {
+					finished = false
+					break
+				}
+			}
+			if finished && (oldest == nil || game.Created.Before(oldest.Created)) {
+				oldest = game
+			}
+		}
+		if oldest != nil {
+			delete(h.scrimba, oldest.ID)
+		}
+	}
+	if len(h.scrimba) >= maxScrimbaGames {
+		return errors.New("too many active Scrimba games; join an existing game or try again later")
 	}
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
@@ -183,6 +227,7 @@ func (h *hub) handleScrimbaLocked(c *client, data []byte) error {
 	if err := strictDecode(data, &msg); err != nil {
 		return errors.New("invalid Scrimba event")
 	}
+	h.pruneScrimbaLocked()
 	g := h.scrimba[msg.ID]
 	if g == nil || h.now().Sub(g.Created) >= scrimbaLifetime {
 		return errors.New("this Scrimba has expired; type /scrimba to start a new game")
@@ -193,6 +238,9 @@ func (h *hub) handleScrimbaLocked(c *client, data []byte) error {
 	p := g.Players[c.player.ID]
 	if msg.Type == "scrimba-join" {
 		if p == nil {
+			if len(g.Players) >= maxScrimbaPlayers {
+				return errors.New("this Scrimba game is full")
+			}
 			g.Players[c.player.ID] = &scrimbaPlayer{ID: c.player.ID, Name: c.player.Name, Guesses: []scrimbaGuess{}}
 		}
 	} else {
