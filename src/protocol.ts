@@ -22,17 +22,23 @@ export type CancelMove = () => Promise<MoveResult>;
 
 export type ChatMessage = {
   type: 'chat';
+  scrimbaId?: string;
   carpetId: string;
   from: string;
   name: string;
   text: string;
 };
 
+export type ScrimbaGuess = { emojis?: string[]; marks: ('correct' | 'present' | 'absent')[] };
+export type ScrimbaPlayer = { id: string; name: string; guesses: ScrimbaGuess[]; done: boolean; won: boolean };
+export type ScrimbaState = { type: 'scrimba-state'; id: string; carpetId: string; players: ScrimbaPlayer[]; solution?: string[] };
+
 export type ServerMessage =
   | { type: 'welcome'; selfId: string; players: Player[]; serverNow: number }
   | { type: 'state'; players: Player[]; serverNow: number }
   | MoveResult
   | ChatMessage
+  | ScrimbaState
   | Signal
   | { type: 'error'; message: string };
 

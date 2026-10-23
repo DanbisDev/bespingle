@@ -274,6 +274,7 @@ func (c *client) stop() {
 }
 
 type hub struct {
+	scrimba  map[string]*scrimbaGame
 	avatars  *avatarService
 	mu       sync.Mutex
 	now      func() time.Time
@@ -734,6 +735,8 @@ func (h *hub) handle(c *client, data []byte) error {
 		c.player.Mic, c.player.Camera = *msg.Mic, *msg.Camera
 		c.player.Screen = msg.Screen && c.player.CarpetID != ""
 		h.broadcastLocked()
+	case "scrimba-join", "scrimba-guess":
+		return h.handleScrimbaLocked(c, data)
 	case "chat":
 		var msg struct {
 			Type     string `json:"type"`
@@ -749,6 +752,9 @@ func (h *hub) handle(c *client, data []byte) error {
 		}
 		if c.player.CarpetID == "" || msg.CarpetID != c.player.CarpetID {
 			return errors.New("join this carpet before sending chat messages")
+		}
+		if msg.Text == "/scrimba" {
+			return h.startScrimbaLocked(c)
 		}
 		// Fan out once to current members, including the sender. No history is
 		// retained or included in state/welcome messages for later arrivals.

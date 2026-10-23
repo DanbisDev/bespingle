@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { Scrimba } from './Scrimba';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
 import { world } from './world';
@@ -146,7 +147,7 @@ export default function App() {
   }
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
-  const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
+  const modalOpen = !!game.scrimbaOpen || !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
 
   return <div className="app-shell">
     <header className="topbar">
@@ -174,7 +175,7 @@ export default function App() {
           </div>
         </section>
         <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onCancelMove={game.cancelMove} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
-          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} />}
+          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} openScrimba={game.openScrimba} />}
         </div>
       </div>
       <footer className="game-hud">
@@ -193,6 +194,8 @@ export default function App() {
       </footer>
       {(game.error || (media.error && !isMediaPrompt && !editingBackground && !editingMicrophone)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
     </main>
+
+    {connected && game.scrimbaOpen && <Scrimba key={game.scrimbaOpen} game={game.scrimbaGames[game.scrimbaOpen]} selfId={game.selfId} send={game.send} close={game.closeScrimba} error={game.error} />}
 
     {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
       <span className="welcome-pixel" aria-hidden="true"><Avatar avatar={avatar} customAvatar={customAvatar} size={88} /></span>
