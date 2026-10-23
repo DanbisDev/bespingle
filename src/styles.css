@@ -74,7 +74,8 @@ h1, h2, p { margin: 0; }
 .video-avatar { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 105%, #435571 0%, #243147 70%); }
 .video-tile video { height: 100%; width: 100%; object-fit: cover; position: absolute; inset: 0; opacity: 0; }
 .video-tile.has-video video { opacity: 1; }
-.video-tile:has(video[muted]) video { transform: scaleX(-1); }
+/* Only your own camera tile is mirrored, and only when you choose it. */
+.video-tile.is-mirrored video { transform: scaleX(-1); }
 .video-caption { position: absolute; bottom: 0; left: 0; right: 0; padding: 16px 7px 5px; background: linear-gradient(transparent, #07101de0); color: #f2f6fc; display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 9px; z-index: 1; }
 .video-caption span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .video-caption small { font-size: inherit; opacity: .75; }
@@ -172,7 +173,10 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .join-note svg { height: 13px; width: 13px; }
 .join-note svg:last-of-type { margin-right: 3px; }
 .form-error, .inline-error { font-size: 11px; color: #ffd2c8; line-height: 1.6; background: #442a31; border: 1px solid #805257; border-radius: 7px; padding: 10px 12px; margin: 12px 0; }
-.inline-error { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 40px); margin: 0; z-index: 9; box-shadow: 0 6px 24px #0006; }
+.inline-error { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 40px); margin: 0; z-index: 9; box-shadow: 0 6px 24px #0006; display: flex; align-items: center; gap: 10px; padding-right: 6px; }
+.inline-error-close { flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.inline-error-close svg { width: 14px; height: 14px; }
+.inline-error-close:hover { background: #ffffff1a; }
 .device-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 24px; }
 .device-choices button { display: flex; flex-direction: column; align-items: flex-start; text-align: left; background: #253247; border: 1px solid #3c4e68; border-radius: 10px; padding: 17px 15px; }
 .device-choices button:hover:not(:disabled) { background: #304b51; border-color: #8fcebf; }
@@ -284,7 +288,8 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .background-forest > span { background: linear-gradient(135deg, #173c39, #708c66); }
 .background-settings > p { margin-top: 12px; color: #c0cbdc; font-size: 12px; }
 .background-preview .video-tile { width: 100%; height: 205px; margin-top: 20px; }
-.background-preview .select-video { display: none; }
+.background-preview .select-video, .self-view-preview .select-video { display: none; }
+.self-view-preview .video-tile { width: 100%; height: 205px; margin-top: 20px; }
 
 .background-upload { margin-top: 12px; width: 100%; }
 

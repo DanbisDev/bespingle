@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
@@ -13,6 +13,7 @@ import type { NoiseLevel, RemoteMedia } from './usePeerMedia';
 import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 import { videoQualities } from './videoQuality';
+import { readMirrorSelfView, saveMirrorSelfView } from './selfView';
 import { Whiteboard } from './Whiteboard';
 
 type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check' | 'more';
@@ -60,7 +61,7 @@ function Dialog({ children, title, description, className = '' }: { children: Re
   </div></div>;
 }
 
-function VideoTile({ player, stream, local, media, screen = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean }) {
+function VideoTile({ player, stream, local, media, screen = false, mirror = false, selected, onSelect }: { selected: boolean; onSelect: () => void; player: Player; stream: MediaStream | null; local: boolean; media?: RemoteMedia; screen?: boolean; mirror?: boolean }) {
   const video = useRef<HTMLVideoElement>(null);
   const speaking = useSpeaking(stream, !screen && player.mic && (local || media?.status === 'connected'));
   const [playBlocked, setPlayBlocked] = useState(false);
@@ -72,7 +73,7 @@ function VideoTile({ player, stream, local, media, screen = false, selected, onS
     return () => { element.srcObject = null; };
   }, [stream]);
   const connectionLabel = local ? 'You' : media?.status === 'connected' ? '' : media?.status === 'failed' ? 'Cannot connect directly' : media?.status === 'disconnected' ? 'Disconnected' : 'Connecting…';
-  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
+  return <div className={`video-tile ${(screen || player.camera) && stream ? 'has-video' : ''} ${screen ? 'screen-tile' : ''} ${selected ? 'is-selected' : ''} ${speaking ? 'is-speaking' : ''} ${local && !screen && mirror ? 'is-mirrored' : ''}`} data-testid={`${screen ? 'screen' : 'video'}-${local ? 'self' : 'peer'}`}>
     <div className="video-avatar"><Avatar avatar={player.avatar} customAvatar={player.customAvatar} size={64} /></div>
     <video ref={video} autoPlay playsInline muted={local || screen} aria-label={`${player.name}${local ? ' (you)' : ''} ${screen ? 'shared screen' : 'video'}`} />
     <div className="video-caption"><span>{player.name}{local && <small> (you)</small>}{screen && <small> · Screen</small>}</span><Icon name={screen ? "screen" : "mic"} off={!screen && !player.mic} /></div>
@@ -150,6 +151,8 @@ export default function App() {
   const [editingBackground, setEditingBackground] = useState(false);
   const [editingMicrophone, setEditingMicrophone] = useState(false);
   const [editingVideo, setEditingVideo] = useState(false);
+  const [mirrorSelfView, setMirrorSelfView] = useState(readMirrorSelfView);
+  const chooseMirrorSelfView = (mirror: boolean) => { setMirrorSelfView(mirror); saveMirrorSelfView(mirror); };
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -198,6 +201,28 @@ export default function App() {
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
   const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || editingVideo || isMediaPrompt;
+  const settingsOpen = editingMicrophone && connected && !!self;
+  const backgroundOpen = editingBackground && connected && !!self;
+  const videoOpen = editingVideo && connected && !!self;
+
+  // Every dialog that shows the device error in itself. One open keeps that
+  // error out of the banner; once one goes away by any route, the error was
+  // already seen there, so it is cleared rather than following the person into
+  // the banner. The render that removes the dialog keeps it out of the alert
+  // banner too, so it is never painted or announced before it is cleared.
+  const deviceDialogs = { microphone: settingsOpen, video: videoOpen, background: backgroundOpen, devices: isMediaPrompt };
+  type DeviceDialog = keyof typeof deviceDialogs;
+  const deviceDialogOpen = Object.values(deviceDialogs).some(Boolean);
+  const previousDialogs = useRef(deviceDialogs);
+  const deviceDialogClosed = (Object.keys(deviceDialogs) as DeviceDialog[]).some((dialog) => previousDialogs.current[dialog] && !deviceDialogs[dialog]);
+  const { clearError: clearMediaError } = media;
+  useLayoutEffect(() => {
+    previousDialogs.current = deviceDialogs;
+    if (deviceDialogClosed) clearMediaError();
+  });
+
+  const bannerError = connected ? game.serverError || (!deviceDialogOpen && !deviceDialogClosed ? media.error : '') : '';
+  const dismissBanner = () => { if (game.serverError) game.clearServerError(); else clearMediaError(); };
 
   return <div className="app-shell">
     <header className="topbar">
@@ -218,7 +243,7 @@ export default function App() {
               </div>
               <div className={`video-layout ${activeTile ? 'has-pin' : 'gallery'}`}><div className="video-grid" aria-label="Pin or unpin a video">
                 {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
-                {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
+                {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} mirror={mirrorSelfView} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
               </div></div>
               {expanded && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
             </> : <div className="quiet-floor"><Icon name="people" /><span>Walk onto a carpet to start a conversation.</span><span className={`quiet-status ${self?.mic || media.cameraOn ? 'is-enabled' : ''}`}><i />{self?.mic && media.cameraOn ? 'Mic & camera on' : self?.mic ? 'Microphone on' : media.cameraOn ? 'Camera on' : 'Devices off'}</span></div>}
@@ -248,7 +273,7 @@ export default function App() {
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
       </footer>
-      {(game.error || (media.error && !isMediaPrompt && !editingBackground && !editingMicrophone && !editingVideo)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
+      {bannerError && <div key={game.serverError ? `server-${game.serverErrorId}` : 'media'} className="inline-error" role="alert"><span>{bannerError}</span><button type="button" className="inline-error-close" aria-label="Dismiss error" title="Dismiss" onClick={dismissBanner}><Icon name="close" /></button></div>}
     </main>
 
     {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
@@ -262,7 +287,7 @@ export default function App() {
 
     {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.send({ type: 'profile', name: name.trim(), avatar, customAvatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={avatar} customAvatar={customAvatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required />{picker}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save profile<Icon name="check" /></button></div></form></Dialog>}
 
-    {editingMicrophone && connected && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
+    {settingsOpen && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
       <NoiseLevels media={media} disabled={media.busy || media.levelBusy} onChange={(level) => { void media.chooseNoiseLevel(level); }} />
       <p className="media-note" role="status">{noiseNote(media, self.mic)}</p>
       <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice lasts until you reload this page.</p>
@@ -270,17 +295,19 @@ export default function App() {
       <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {editingVideo && connected && self && <Dialog title="Video settings" description="Choose how much video you send.">
+    {videoOpen && self && <Dialog title="Video settings" description="Choose how much video you send.">
       <fieldset className="quality-settings"><legend>Video quality</legend>
         {videoQualities.map(({ id, label, detail }) => <label key={id} className="quality-choice"><input type="radio" name="video-quality" value={id} aria-label={label} aria-describedby={`quality-${id}`} checked={media.quality === id} onChange={() => media.chooseQuality(id)} /><span><strong>{label}</strong><small id={`quality-${id}`}>{detail}</small></span></label>)}
       </fieldset>
-      <p className="media-note">{media.quality === 'audio' ? 'Your camera keeps running on your device but is not sent, so others see your avatar. Audio and screen sharing continue.' : 'Your video quality choice is remembered in this browser.'}</p>
+      {media.cameraOn && <div className="self-view-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local mirror={mirrorSelfView} selected={false} onSelect={() => {}} /></div>}
+      <label className="noise-setting"><input type="checkbox" checked={mirrorSelfView} onChange={(event) => chooseMirrorSelfView(event.target.checked)} />Mirror my video</label>
+      <p className="media-note">{media.quality === 'audio' ? 'Your camera keeps running on your device but is not sent, so others see your avatar. Audio and screen sharing continue.' : 'Your video quality choice is remembered in this browser.'} Mirroring changes only how you see yourself; others always see your true image.</p>
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingVideo(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
-      {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
+    {backgroundOpen && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
+      {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local mirror={mirrorSelfView} selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
       <BackgroundChoices value={media.background} busy={media.busy} reduced={media.backgroundReduced} onChange={media.chooseBackground} />
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <p className="media-note">Your background is applied on your device and is visible to everyone in your conversation.</p>

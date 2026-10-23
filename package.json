@@ -17,6 +17,7 @@
     "test:backgrounds": "node scripts/background-smoke.mjs",
     "test:audio": "node scripts/audio-smoke.mjs",
     "test:quality": "node scripts/quality-smoke.mjs",
+    "test:mirror": "node scripts/mirror-smoke.mjs",
     "test:load": "node scripts/load-smoke.mjs",
     "test:avatars": "RUN_BROWSER_AVATARS=1 go test -count=1 -run TestAvatarBrowserFlow -v ./server",
     "test:portals": "node scripts/portal-smoke.mjs"

@@ -61,6 +61,7 @@ async function client(name, avatar) {
     window.__screens = [];
     navigator.mediaDevices.getDisplayMedia = async () => {
       if (window.__cancelScreen) { window.__cancelScreen = false; throw new DOMException('Cancelled', 'NotAllowedError'); }
+      if (window.__failScreen) { window.__failScreen = false; throw new DOMException('Screen capture failed.', 'NotReadableError'); }
       const canvas = document.createElement('canvas');
       canvas.width = 1280; canvas.height = 720;
       const ctx = canvas.getContext('2d');
@@ -73,7 +74,14 @@ async function client(name, avatar) {
       return stream;
     };
     const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function(data) { if (this.url.endsWith('/ws')) window.__wire.push(JSON.parse(data)); return send.call(this, data); };
+    WebSocket.prototype.send = function(data) {
+      if (this.url.endsWith('/ws')) {
+        if (window.__socket !== this) this.addEventListener('message', (event) => { const message = JSON.parse(event.data); if (message.type === 'welcome') window.__selfId = message.selfId; });
+        window.__socket = this;
+        window.__wire.push(JSON.parse(data));
+      }
+      return send.call(this, data);
+    };
   });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(`${name}: ${error.message}`));
@@ -206,6 +214,25 @@ try {
   await alice.waitForTimeout(100);
   await alice.screenshot({ path: `${output}/02-game-area.png`, fullPage: true });
   console.log('Full-window night layout, resize, and wheel zoom passed', { zoomBefore, zoomIn, zoomOut });
+
+  // A signal addressed to oneself is rejected by the server: the error #11 is
+  // about. A signal to an absent peer is dropped silently, so it cannot be used.
+  const rejectSignal = () => alice.evaluate(() => window.__socket.send(JSON.stringify({ type: 'signal', to: window.__selfId, sessionId: 'smoke', candidate: { candidate: '' } })));
+  const banner = alice.locator('.inline-error').filter({ hasText: 'signaling requires two participants on the same carpet' });
+  await rejectSignal();
+  await banner.waitFor();
+  const shownAt = Date.now();
+  await banner.waitFor({ state: 'hidden', timeout: 8000 });
+  const expiredAfter = Date.now() - shownAt;
+  assert(expiredAfter >= 4500, `Server errors stay up for five seconds (${expiredAfter}ms)`);
+  await rejectSignal();
+  await banner.waitFor();
+  const dismiss = banner.getByRole('button', { name: 'Dismiss error', exact: true });
+  await dismiss.focus();
+  await alice.keyboard.press('Enter');
+  await banner.waitFor({ state: 'hidden', timeout: 1000 });
+  assert.equal(await alice.locator('.inline-error').count(), 0, 'A dismissed server error leaves no banner');
+  console.log('Server errors expire after five seconds and close from the keyboard', { expiredAfter });
 
   // Straight walk to the middle carpet, stopping as soon as the prompt opens.
   await alice.bringToFront();
@@ -367,6 +394,21 @@ try {
   await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
   await alice.waitForFunction(() => !document.querySelector('[aria-label="Share screen"]').disabled);
   assert.equal(await alice.getByTestId('screen-self').count(), 0, 'Cancelling capture does not start sharing');
+  // A device error seen in a device dialog does not follow into the banner.
+  await alice.evaluate(() => { window.__failScreen = true; });
+  await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
+  const deviceBanner = alice.locator('.inline-error').filter({ hasText: 'Screen capture failed.' });
+  await deviceBanner.waitFor();
+  await alice.getByRole('button', { name: 'Video settings', exact: true }).click();
+  const videoDialog = alice.getByRole('dialog', { name: 'Video settings' });
+  await videoDialog.locator('.form-error').filter({ hasText: 'Screen capture failed.' }).waitFor();
+  assert.equal(await deviceBanner.count(), 0, 'An open video settings dialog keeps its device error out of the banner');
+  await alice.evaluate(() => { window.__bannerSeen = false; new MutationObserver(() => { if (document.querySelector('.inline-error')) window.__bannerSeen = true; }).observe(document.body, { childList: true, subtree: true }); });
+  await videoDialog.getByRole('button', { name: 'Done', exact: false }).click();
+  await videoDialog.waitFor({ state: 'detached' });
+  await alice.waitForTimeout(200);
+  assert.equal(await alice.locator('.inline-error').count(), 0, 'Closing video settings leaves no device error in the banner');
+  assert.equal(await alice.evaluate(() => window.__bannerSeen), false, 'The device error never reaches the banner as video settings closes');
   await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
   await bob.getByTestId('screen-peer').waitFor();
   console.log('Concurrent screen shares, received frames, preserved devices, explicit stop, browser stop, and cancellation passed');
