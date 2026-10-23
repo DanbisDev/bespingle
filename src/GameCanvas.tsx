@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { drawAvatar, drawGameWorld } from './art';
 import { findCarpet, findChair, snapToGrid, world, type Player } from './world';
-import type { Move } from './protocol';
+import type { CancelMove, Move } from './protocol';
 
 interface GameCanvasProps {
   players: Player[];
   selfId: string;
   onMove: Move;
+  onCancelMove: CancelMove;
   onDance: () => void;
   serverNow: () => number;
   disabled?: boolean;
@@ -14,8 +15,12 @@ interface GameCanvasProps {
 
 type Direction = 'up' | 'down' | 'left' | 'right';
 type Position = { x: number; y: number; facing: string };
-type PendingStep = { id: string; fromX: number; fromY: number; toX: number; toY: number };
+// startsAt is the server time a queued step begins, or null for one that begins on acceptance.
+type PendingStep = { id: string; fromX: number; fromY: number; startsAt: number | null };
 type Bounce = { id: string; direction: Direction; startedAt: number };
+// A withdrawn queued step stays hidden until the server's answer and the state after it arrive.
+type Cancel = { startsAt: number; answer?: { accepted: boolean; players: Player[] } };
+type StepSource = 'tap' | 'held';
 
 const directions: Record<string, Direction> = {
   KeyW: 'up', KeyA: 'left', KeyS: 'down', KeyD: 'right',
@@ -25,6 +30,11 @@ const vectors: Record<Direction, readonly [number, number]> = { up: [0, -1], dow
 // Leave room for floating reactions above avatars at the top edge of the world.
 const cameraHeadroom = 140;
 const bounceDuration = 190;
+// The server accepts a queued step in the second half of the current one. Ask
+// a little inside that, so a drifting clock is not refused, and well ahead of a
+// round trip, so the accepted step is known before the current one ends.
+const stepLead = world.grid.stepDurationMs / 2 - 20;
+const retryDelay = 30;
 
 function typingInto(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (
@@ -32,20 +42,33 @@ function typingInto(target: EventTarget | null): boolean {
   );
 }
 
+// Steps move at a constant pace, so a queued step continues its predecessor
+// without slowing at the tile boundary between them.
 function animatedPosition(player: Player, now: number): Position {
-  if (!player.move) return { x: player.x, y: player.y, facing: player.facing };
-  const progress = Math.max(0, Math.min(1, (now - player.move.startedAt) / player.move.durationMs));
-  if (player.move.portal) return {
-    x: progress < .5 ? player.x : player.move.toX,
-    y: progress < .5 ? player.y : player.move.toY,
-    facing: player.facing,
-  };
-  const eased = progress * progress * (3 - 2 * progress);
-  return {
-    x: player.x + (player.move.toX - player.x) * eased,
-    y: player.y + (player.move.toY - player.y) * eased,
-    facing: player.facing,
-  };
+  if (player.move?.portal) {
+    const progress = portalProgress(player, now);
+    return { x: progress < .5 ? player.x : player.move.toX,
+      y: progress < .5 ? player.y : player.move.toY, facing: player.facing };
+  }
+  let x = player.x;
+  let y = player.y;
+  let facing = player.facing;
+  for (const step of [player.move, player.next]) {
+    if (!step) break;
+    const progress = Math.min(1, (now - step.startedAt) / step.durationMs);
+    if (progress <= 0) break;
+    facing = step.facing || facing;
+    if (progress < 1) return { x: x + (step.toX - x) * progress, y: y + (step.toY - y) * progress, facing };
+    x = step.toX;
+    y = step.toY;
+  }
+  return { x, y, facing };
+}
+
+/** The tile a player's accepted steps end on. */
+function tail(player: Player) {
+  const last = player.next ?? player.move;
+  return last ? { x: last.toX, y: last.toY } : { x: player.x, y: player.y };
 }
 
 function portalProgress(player: Player, now: number): number {
@@ -138,18 +161,24 @@ function reactionBubble(ctx: CanvasRenderingContext2D, player: Player, x: number
   ctx.restore();
 }
 
-export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabled = false }: GameCanvasProps) {
+export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, serverNow, disabled = false }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const playersRef = useRef(players);
   const selfIdRef = useRef(selfId);
   const onMoveRef = useRef(onMove);
+  const onCancelMoveRef = useRef(onCancelMove);
   const onDanceRef = useRef(onDance);
   const serverNowRef = useRef(serverNow);
   const disabledRef = useRef(disabled);
   const keysRef = useRef(new Set<string>());
   const queuedDirectionRef = useRef<Direction | null>(null);
   const pendingRef = useRef<PendingStep | null>(null);
+  // Server start time of a queued step asked for by a held key. Releasing the
+  // key before it starts withdraws it, so the avatar stops on the current tile.
+  const heldStepRef = useRef<number | null>(null);
+  const cancelRef = useRef<Cancel | null>(null);
+  const retryAtRef = useRef(0);
   const bounceRef = useRef<Bounce | null>(null);
   const bounceCountRef = useRef(0);
   const ownFacingRef = useRef('down');
@@ -157,6 +186,7 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
   playersRef.current = players;
   selfIdRef.current = selfId;
   onMoveRef.current = onMove;
+  onCancelMoveRef.current = onCancelMove;
   onDanceRef.current = onDance;
   serverNowRef.current = serverNow;
   disabledRef.current = disabled;
@@ -172,6 +202,9 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
     keysRef.current.clear();
     queuedDirectionRef.current = null;
     pendingRef.current = null;
+    heldStepRef.current = null;
+    cancelRef.current = null;
+    retryAtRef.current = 0;
     bounceRef.current = null;
     bounceCountRef.current = 0;
     ownFacingRef.current = 'down';
@@ -192,6 +225,8 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
 
     let animation = 0;
     let active = true;
+    // The camera the last frame was drawn with, for mapping the pointer onto the world.
+    const camera = { x: 0, y: 0, zoom: 1 };
     const view = { width: world.width, height: world.height, dpr: 1, zoom: 1, userZoom: false };
 
     function zoomBounds() {
@@ -261,22 +296,31 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
       if (document.hidden) clearKeys();
     }
 
-    function requestStep(player: Player, direction: Direction) {
+    // Ask for one step in a direction from the tile the player's accepted
+    // steps end on. While a step is in flight this queues the next one to
+    // start exactly when it ends; a held key repeats this every step.
+    function requestStep(player: Player, direction: Direction, sprint: boolean, source: StepSource) {
       const [dx, dy] = vectors[direction];
-      const pending = {
-        id: player.id, fromX: player.x, fromY: player.y,
-        toX: player.x + dx * world.grid.size, toY: player.y + dy * world.grid.size,
-      };
+      const from = tail(player);
+      const to = { x: from.x + dx * world.grid.size, y: from.y + dy * world.grid.size };
+      const end = player.move ? player.move.startedAt + player.move.durationMs : 0;
+      const pending = { id: player.id, fromX: from.x, fromY: from.y, startsAt: end > serverNowRef.current() ? end : null };
       pendingRef.current = pending;
+      heldStepRef.current = source === 'held' && pending.startsAt !== null ? pending.startsAt : null;
       ownFacingRef.current = direction;
       // Animate only an accepted step. Two simultaneous claims cannot visually pass through each other.
-      void onMoveRef.current(pending.toX, pending.toY, direction, keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight')).then((result) => {
+      void onMoveRef.current(to.x, to.y, direction, sprint).then((result) => {
         if (!active || pendingRef.current !== pending || selfIdRef.current !== pending.id) return;
         if (!result.accepted) {
           pendingRef.current = null;
+          if (heldStepRef.current === pending.startsAt) heldStepRef.current = null;
           if (result.reason === 'occupied' || result.reason === 'wall') {
-            bounceRef.current = { id: player.id, direction, startedAt: performance.now() };
+            // A refused queued step bounces once the current step lands.
+            const wait = pending.startsAt === null ? 0 : Math.max(0, pending.startsAt - serverNowRef.current());
+            bounceRef.current = { id: player.id, direction, startedAt: performance.now() + wait };
             bounceCountRef.current++;
+          } else {
+            retryAtRef.current = performance.now() + retryDelay;
           }
         }
       });
@@ -285,35 +329,67 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
     function onDoubleClick(event: MouseEvent) {
       if (!canvas || disabledRef.current) return;
       const self = playersRef.current.find((player) => player.id === selfIdRef.current);
-      if (!self || self.move || pendingRef.current) return;
+      if (!self || self.move || self.next || pendingRef.current || cancelRef.current) return;
+      event.preventDefault();
       const bounds = canvas.getBoundingClientRect();
       const target = snapToGrid(
-        (event.clientX - bounds.left - Number(canvas.dataset.cameraX)) / view.zoom,
-        (event.clientY - bounds.top - Number(canvas.dataset.cameraY)) / view.zoom,
+        (event.clientX - bounds.left - camera.x) / camera.zoom,
+        (event.clientY - bounds.top - camera.y) / camera.zoom,
       );
       if (target.x === self.x && target.y === self.y) return;
       clearKeys();
-      const pending = { id: self.id, fromX: self.x, fromY: self.y, toX: target.x, toY: target.y };
+      bounceRef.current = null;
+      const pending = { id: self.id, fromX: self.x, fromY: self.y, startsAt: null };
       pendingRef.current = pending;
       void onMoveRef.current(target.x, target.y, self.facing, false, true).then((result) => {
         if (active && pendingRef.current === pending && !result.accepted) pendingRef.current = null;
       });
     }
 
+    function cancelHeldStep(startsAt: number) {
+      const cancel: Cancel = { startsAt };
+      cancelRef.current = cancel;
+      heldStepRef.current = null;
+      pendingRef.current = null;
+      void onCancelMoveRef.current().then((result) => {
+        if (cancelRef.current === cancel) cancel.answer = { accepted: result.accepted, players: playersRef.current };
+      });
+    }
+
+    // Hide a queued step being withdrawn, so it never starts on this screen.
+    function withoutCancelled(player: Player): Player {
+      const cancel = cancelRef.current;
+      return cancel && player.next?.startedAt === cancel.startsAt ? { ...player, next: undefined } : player;
+    }
+
     function render(now: number) {
       if (!canvas || !ctx) return;
       const time = serverNowRef.current();
-      const self = playersRef.current.find((player) => player.id === selfIdRef.current);
+      const reported = playersRef.current.find((player) => player.id === selfIdRef.current);
+      const heldKeys = [...keysRef.current].filter((key) => directions[key]);
+      const heldStep = heldStepRef.current;
+      if (heldStep !== null && time >= heldStep) heldStepRef.current = null;
+      else if (heldStep !== null && (!heldKeys.length || disabledRef.current)) cancelHeldStep(heldStep);
+      const cancel = cancelRef.current;
+      if (cancel?.answer && reported && (!cancel.answer.accepted || playersRef.current !== cancel.answer.players) && reported.next?.startedAt !== cancel.startsAt) {
+        cancelRef.current = null;
+      }
+      const self = reported && withoutCancelled(reported);
       const pending = pendingRef.current;
-      if (pending && self && (self.move || self.x !== pending.fromX || self.y !== pending.fromY)) pendingRef.current = null;
+      if (pending && self) {
+        const end = tail(self);
+        if (end.x !== pending.fromX || end.y !== pending.fromY) pendingRef.current = null;
+      }
       if (bounceRef.current && (bounceRef.current.id !== self?.id || now - bounceRef.current.startedAt >= bounceDuration)) bounceRef.current = null;
-      if (self && !disabledRef.current && !self.move && !pendingRef.current && !bounceRef.current) {
-        const heldKeys = [...keysRef.current].filter((key) => directions[key]);
+      if (self && !disabledRef.current && !pendingRef.current && !bounceRef.current && !cancelRef.current && now >= retryAtRef.current && !self.next && !self.move?.portal &&
+        (!self.move || time >= self.move.startedAt + self.move.durationMs - stepLead)) {
         const held = heldKeys.length ? directions[heldKeys[heldKeys.length - 1]] : null;
-        const direction = queuedDirectionRef.current ?? held;
+        const tapped = queuedDirectionRef.current;
+        const direction = tapped ?? held;
         if (direction) {
           queuedDirectionRef.current = null;
-          requestStep(self, direction);
+          const sprint = (keysRef.current.has('ShiftLeft') || keysRef.current.has('ShiftRight'));
+          requestStep(self, direction, sprint, tapped ? 'tap' : 'held');
         }
       }
 
@@ -335,6 +411,9 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
       ctx.scale(zoom, zoom);
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(background, 0, 0);
+      camera.x = cameraX;
+      camera.y = cameraY;
+      camera.zoom = zoom;
       canvas.dataset.zoom = zoom.toFixed(4);
       canvas.dataset.cameraX = cameraX.toFixed(2);
       canvas.dataset.cameraY = cameraY.toFixed(2);
@@ -379,8 +458,11 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
         drawPortal(ctx, move.toX, move.toY, move.portal === 'orange' ? 'blue' : 'orange', progress);
       }
 
+      const peers: Record<string, [number, number]> = {};
       const positioned = playersRef.current.map((player) => {
+        if (player.id === selfIdRef.current) player = withoutCancelled(player);
         const position = animatedPosition(player, time);
+        if (player.id !== selfIdRef.current) peers[player.id] = [Number(position.x.toFixed(2)), Number(position.y.toFixed(2))];
         if (player.id === selfIdRef.current) {
           if (!player.move) position.facing = ownFacingRef.current;
           const bounce = bounceRef.current;
@@ -397,6 +479,7 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
         }
         return { player, position };
       }).sort((a, b) => a.position.y - b.position.y);
+      canvas.dataset.peers = JSON.stringify(peers);
 
       for (const { player, position } of positioned) {
         const isSelf = player.id === selfIdRef.current;
@@ -450,8 +533,8 @@ export function GameCanvas({ players, selfId, onMove, onDance, serverNow, disabl
       cancelAnimationFrame(animation);
       resizeObserver.disconnect();
       viewport.removeEventListener('wheel', onWheel);
-      window.removeEventListener('resize', resize);
       canvas.removeEventListener('dblclick', onDoubleClick);
+      window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearKeys);

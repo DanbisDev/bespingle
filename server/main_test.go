@@ -513,7 +513,7 @@ func TestOccupiedSourceAndDestinationRemainExclusiveDuringMove(t *testing.T) {
 		t.Fatal("source tile released before the departing avatar arrived")
 	}
 	if result := requestMove(t, h, b, 2, 360, 216, "right"); result.Reason != "busy" {
-		t.Fatal("second in-flight step was accepted")
+		t.Fatal("a step was queued at the start of the current one")
 	}
 	advance(h, clock, 240*time.Millisecond)
 	if result := requestMove(t, h, a, 3, 264, 216, "right"); !result.Accepted {
@@ -1105,5 +1105,290 @@ func TestScreenSharingMembershipAndSignaling(t *testing.T) {
 	msg.Description.SDP += "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
 	if err := validateSignal(msg); err == nil {
 		t.Fatal("more than three media sections accepted")
+	}
+}
+
+func cancelMove(t *testing.T, h *hub, c *client, requestID uint64) moveResult {
+	t.Helper()
+	if err := h.handle(c, marshal(map[string]any{"type": "move-cancel", "requestId": requestID})); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case data := <-c.send:
+			var result moveResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Type == "move-result" && result.RequestID == requestID {
+				return result
+			}
+		default:
+			t.Fatalf("no cancel result for request %d", requestID)
+		}
+	}
+}
+
+func TestQueuedStepStartsExactlyWhenCurrentStepEnds(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	c := unitClient(t, h, "Walker")
+	start := clock.now().UnixMilli()
+	if result := requestMove(t, h, c, 1, 72, 312, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	if result := requestMove(t, h, c, 2, 72, 264, "up"); result.Accepted || result.Reason != "busy" {
+		t.Fatalf("step queued at the start of the current one: %+v", result)
+	}
+	advance(h, clock, 119*time.Millisecond)
+	if result := requestMove(t, h, c, 3, 72, 264, "up"); result.Accepted || result.Reason != "busy" {
+		t.Fatalf("step queued more than half a step early: %+v", result)
+	}
+	advance(h, clock, time.Millisecond)
+	for _, tc := range []struct {
+		name   string
+		x, y   float64
+		facing string
+	}{
+		{"from the source tile", 72, 312, "up"},
+		{"two tiles ahead", 72, 216, "up"},
+		{"wrong facing", 72, 264, "left"},
+	} {
+		if result := requestMove(t, h, c, 4, tc.x, tc.y, tc.facing); result.Accepted || result.Reason != "invalid" {
+			t.Fatalf("queued step %s: %+v", tc.name, result)
+		}
+	}
+	if result := requestMove(t, h, c, 5, 72, 264, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	p := snapshot(h, c)
+	if p.X != 72 || p.Y != 360 || p.Move == nil || p.Move.ToY != 312 || p.Next == nil || p.Next.ToY != 264 || p.Next.Facing != "up" ||
+		p.Next.StartedAt != start+240 || p.Next.DurationMs != 240 {
+		t.Fatalf("incorrect queued state: %+v move=%+v next=%+v", p, p.Move, p.Next)
+	}
+	if result := requestMove(t, h, c, 6, 72, 216, "up"); result.Accepted || result.Reason != "busy" {
+		t.Fatalf("a second step was queued: %+v", result)
+	}
+	// A late tick still starts the queued step at the previous end.
+	advance(h, clock, 170*time.Millisecond)
+	p = snapshot(h, c)
+	if p.X != 72 || p.Y != 312 || p.Next != nil || p.Move == nil || p.Move.ToY != 264 || p.Move.StartedAt != start+240 {
+		t.Fatalf("queued step did not follow on: %+v move=%+v", p, p.Move)
+	}
+	advance(h, clock, 70*time.Millisecond)
+	// The next queued step is validated from the queued step's destination.
+	if result := requestMove(t, h, c, 7, 72, 216, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	if n := snapshot(h, c).Next; n == nil || n.StartedAt != start+480 {
+		t.Fatalf("second chained step was not pinned to the previous end: %+v", n)
+	}
+	// One tick after both steps end lands them in order.
+	advance(h, clock, 500*time.Millisecond)
+	if p = snapshot(h, c); p.X != 72 || p.Y != 216 || p.Move != nil || p.Next != nil {
+		t.Fatalf("chained steps did not settle: %+v", p)
+	}
+}
+
+func TestQueuedStepTurnsAndStopsAtWalls(t *testing.T) {
+	w := testWorld()
+	w.Spawn = point{X: 216, Y: 72}
+	h, clock := testHub(t, w)
+	c := unitClient(t, h, "Walker")
+	if result := requestMove(t, h, c, 1, 264, 72, "right"); !result.Accepted {
+		t.Fatal(result)
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if result := requestMove(t, h, c, 2, 312, 72, "right"); result.Accepted || result.Reason != "wall" {
+		t.Fatalf("queued step crossed a wall: %+v", result)
+	}
+	if result := requestMove(t, h, c, 3, 264, 120, "down"); !result.Accepted {
+		t.Fatal(result)
+	}
+	if p := snapshot(h, c); p.Facing != "right" {
+		t.Fatal("a queued turn changed facing before the step began")
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if p := snapshot(h, c); p.Facing != "down" || p.Move == nil || p.Move.Facing != "down" {
+		t.Fatalf("queued turn did not face its direction: %+v", p)
+	}
+}
+
+func TestQueuedSprintExtendsFromCurrentDestination(t *testing.T) {
+	w := testWorld()
+	w.Spawn = point{X: 72, Y: 216}
+	h, clock := testHub(t, w)
+	c := unitClient(t, h, "Runner")
+	if result := requestMove(t, h, c, 1, 120, 216, "right", true); !result.Accepted {
+		t.Fatal(result)
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if result := requestMove(t, h, c, 2, 264, 216, "right", true); !result.Accepted {
+		t.Fatal(result)
+	}
+	p := snapshot(h, c)
+	if p.Move.ToX != 216 || p.Next == nil || p.Next.ToX != 360 || p.Next.StartedAt != p.Move.StartedAt+240 {
+		t.Fatalf("incorrect queued sprint stride: move=%+v next=%+v", p.Move, p.Next)
+	}
+}
+
+func TestQueuedStepLandingDerivesCarpetAndSeat(t *testing.T) {
+	w := testWorld()
+	w.Spawn = point{X: 120, Y: 312}
+	h, clock := testHub(t, w)
+	c := unitClient(t, h, "Sitter")
+	if result := requestMove(t, h, c, 1, 120, 264, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if result := requestMove(t, h, c, 2, 120, 216, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	if p := snapshot(h, c); p.CarpetID != "" || p.Seated {
+		t.Fatal("membership changed before landing")
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if p := snapshot(h, c); p.CarpetID != "a" || p.Seated {
+		t.Fatalf("first landing membership: %+v", p)
+	}
+	advance(h, clock, 240*time.Millisecond)
+	if p := snapshot(h, c); p.CarpetID != "a" || !p.Seated {
+		t.Fatalf("queued landing membership: %+v", p)
+	}
+}
+
+func TestQueuedStepsReserveTheirPath(t *testing.T) {
+	w := testWorld()
+	w.Spawn = point{X: 72, Y: 72}
+	h, clock := testHub(t, w)
+	a, b := unitClient(t, h, "Alice"), unitClient(t, h, "Bob")
+	h.mu.Lock()
+	a.player.X, a.player.Y = 168, 216
+	b.player.X, b.player.Y = 360, 264
+	h.mu.Unlock()
+	if result := requestMove(t, h, a, 1, 216, 216, "right"); !result.Accepted {
+		t.Fatal(result)
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if result := requestMove(t, h, a, 2, 264, 216, "right", true); !result.Accepted {
+		t.Fatal(result)
+	}
+	h.mu.Lock()
+	for _, x := range []float64{216, 264, 312, 360} {
+		if !h.occupiedLocked(point{X: x, Y: 216}, b) {
+			t.Errorf("queued path tile %v was not reserved", x)
+		}
+	}
+	h.mu.Unlock()
+	if result := requestMove(t, h, b, 1, 360, 216, "up"); result.Accepted || result.Reason != "occupied" {
+		t.Fatalf("queued destination was claimed: %+v", result)
+	}
+	// Withdrawn queued tiles are released; the in-flight destination is not.
+	if result := cancelMove(t, h, a, 3); !result.Accepted {
+		t.Fatal(result)
+	}
+	if result := requestMove(t, h, b, 2, 360, 216, "up"); !result.Accepted {
+		t.Fatal("cancelled queued tile remained reserved")
+	}
+	h.mu.Lock()
+	if !h.occupiedLocked(point{X: 216, Y: 216}, b) {
+		t.Error("in-flight destination released by a cancel")
+	}
+	h.mu.Unlock()
+	advance(h, clock, 120*time.Millisecond)
+	if p := snapshot(h, a); p.X != 216 || p.Move != nil || p.Next != nil {
+		t.Fatalf("cancelled step still taken: %+v", p)
+	}
+}
+
+func TestQueuedStepMayFollowIntoATileVacatedInTime(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lag    time.Duration
+		accept bool
+	}{{"leader ends first", 0, true}, {"leader still crossing", 60 * time.Millisecond, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := testWorld()
+			w.Spawn = point{X: 72, Y: 72}
+			h, clock := testHub(t, w)
+			leader, follower := unitClient(t, h, "Leader"), unitClient(t, h, "Follower")
+			h.mu.Lock()
+			leader.player.X, leader.player.Y = 264, 216
+			follower.player.X, follower.player.Y = 168, 216
+			h.mu.Unlock()
+			if result := requestMove(t, h, follower, 1, 216, 216, "right"); !result.Accepted {
+				t.Fatal(result)
+			}
+			advance(h, clock, tc.lag)
+			if result := requestMove(t, h, leader, 1, 312, 216, "right"); !result.Accepted {
+				t.Fatal(result)
+			}
+			advance(h, clock, 120*time.Millisecond-tc.lag)
+			result := requestMove(t, h, follower, 2, 264, 216, "right")
+			if result.Accepted != tc.accept || !tc.accept && result.Reason != "occupied" {
+				t.Fatalf("follower claim of the leader's source: %+v", result)
+			}
+		})
+	}
+}
+
+func TestMoveCancelWithdrawsOnlyAQueuedStep(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	c := unitClient(t, h, "Walker")
+	if result := cancelMove(t, h, c, 1); result.Accepted {
+		t.Fatal("cancel without a queued step reported a withdrawal")
+	}
+	if result := requestMove(t, h, c, 2, 72, 312, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	if result := cancelMove(t, h, c, 3); result.Accepted || snapshot(h, c).Move == nil {
+		t.Fatal("cancel interrupted an in-flight step")
+	}
+	advance(h, clock, 120*time.Millisecond)
+	if result := requestMove(t, h, c, 4, 72, 264, "up"); !result.Accepted {
+		t.Fatal(result)
+	}
+	if result := cancelMove(t, h, c, 5); !result.Accepted {
+		t.Fatal(result)
+	}
+	if p := snapshot(h, c); p.Next != nil || p.Move == nil || p.Move.ToY != 312 {
+		t.Fatalf("cancel did not withdraw only the queued step: %+v", p)
+	}
+	advance(h, clock, 500*time.Millisecond)
+	if p := snapshot(h, c); p.Y != 312 || p.Move != nil {
+		t.Fatalf("cancelled walk did not stop on the current tile: %+v", p)
+	}
+	if err := h.handle(c, []byte(`{"type":"move-cancel","requestId":0}`)); err == nil {
+		t.Fatal("cancel without a request ID accepted")
+	}
+}
+
+// A client sending as fast as it likes still gains at most one stride per
+// step duration, because every accepted step starts when the previous ends.
+func TestStepFloodCannotOutpaceTheStepDuration(t *testing.T) {
+	w := testWorld()
+	w.Spawn = point{X: 24, Y: 216}
+	h, clock := testHub(t, w)
+	c := unitClient(t, h, "Flooder")
+	begin := clock.now().UnixMilli()
+	var request uint64
+	for elapsed := 0; elapsed < 960; elapsed += 5 {
+		p := snapshot(h, c)
+		tail := p.X
+		if p.Next != nil {
+			tail = p.Next.ToX
+		} else if p.Move != nil {
+			tail = p.Move.ToX
+		}
+		request++
+		requestMove(t, h, c, request, tail+48, 216, "right")
+		drain(c)
+		advance(h, clock, 5*time.Millisecond)
+	}
+	p := snapshot(h, c)
+	if p.Move == nil || p.Move.StartedAt != begin+960 {
+		t.Fatalf("strides were not back to back: %+v", p.Move)
+	}
+	if p.X != 24+4*48 {
+		t.Fatalf("flood travelled %v pixels in four strides", p.X-24)
 	}
 }

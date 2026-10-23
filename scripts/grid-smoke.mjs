@@ -81,9 +81,10 @@ async function waitIdle(page) {
     const results = new Map(window.__messages.filter((message) => message.type === 'move-result').map((message) => [message.requestId, message]));
     if (!self || self.move || moves.some((move) => !results.has(move.requestId))) return false;
     // An acknowledgement may arrive before its state frame. For the latest
-    // accepted request, wait for that destination's authoritative landing.
-    const lastMove = moves.at(-1);
-    if (lastMove && !lastMove.sprint && results.get(lastMove.requestId).accepted && (self.x !== lastMove.x || self.y !== lastMove.y)) return false;
+    // accepted request, wait for that destination's authoritative landing,
+    // unless releasing a held key withdrew it.
+    const lastMove = window.__sent.findLast((message) => message.type === 'move' || message.type === 'move-cancel');
+    if (lastMove?.type === 'move' && !lastMove.sprint && results.get(lastMove.requestId).accepted && (self.x !== lastMove.x || self.y !== lastMove.y)) return false;
     return canvas.dataset.moving !== 'true' && canvas.dataset.bouncing !== 'true' &&
       Number(canvas.dataset.x) === self.x && Number(canvas.dataset.y) === self.y &&
       Number(canvas.dataset.renderX) === self.x && Number(canvas.dataset.renderY) === self.y;
@@ -140,6 +141,50 @@ async function bounce(page, key) {
   assert.equal(after.renderY, before.y);
 }
 
+// Record a rendered x coordinate on every frame: the walker's own, or a
+// watched peer's as another screen draws it.
+async function startSampling(page, peerId) {
+  await page.evaluate((peerId) => {
+    window.__samples = [];
+    window.__sampling = true;
+    const canvas = document.querySelector('[data-testid="game-canvas"]');
+    const sample = (time) => {
+      const x = peerId ? JSON.parse(canvas.dataset.peers || '{}')[peerId]?.[0] : Number(canvas.dataset.renderX);
+      window.__samples.push([time, x]);
+      if (window.__sampling) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }, peerId);
+}
+async function stopSampling(page) {
+  return page.evaluate(() => {
+    window.__sampling = false;
+    return window.__samples;
+  });
+}
+// Between leaving the first tile and arriving on the last, every frame must
+// advance at the walking pace. A stop at a tile boundary shows as a frame
+// without progress, or as a slower average pace.
+function assertContinuous(samples, from, to, pxPerMs, label) {
+  const moving = samples.filter(([, x]) => x > from + 2 && x < to - 2);
+  assert(moving.length > 10, label + ': enough frames were sampled while walking');
+  const frames = samples.slice(samples.indexOf(moving[0]), samples.indexOf(moving.at(-1)) + 1);
+  for (let i = 1; i < frames.length; i++) {
+    assert(frames[i][1] > frames[i - 1][1], label + ': the rendered position never stalls, at ' + frames[i - 1][1] + ' after ' + Math.round(frames[i][0] - frames[i - 1][0]) + 'ms');
+  }
+  const pace = (frames.at(-1)[1] - frames[0][1]) / (frames.at(-1)[0] - frames[0][0]);
+  assert(Math.abs(pace - pxPerMs) < pxPerMs * 0.15, label + ': constant walking pace, measured ' + pace.toFixed(3) + ' px/ms');
+}
+async function holdUntilPast(page, keys, x) {
+  await focus(page);
+  for (const key of keys) await page.keyboard.down(key);
+  try {
+    await page.waitForFunction((x) => Number(document.querySelector('[data-testid="game-canvas"]').dataset.renderX) >= x, x, { timeout: 5000, polling: 'raf' });
+  } finally {
+    for (const key of [...keys].reverse()) await page.keyboard.up(key);
+  }
+}
+
 // Match the shared eight-pixel feet radius and test complete movement segments.
 function blocked(from, to) {
   if (to.x < 8 || to.x > world.width - 8 || to.y < 8 || to.y > world.height - 8) return true;
@@ -188,6 +233,25 @@ async function go(page, target) {
     await step(page, key);
     await dismissPrompt(page);
   }
+}
+
+// Map a world point to the screen through the camera the canvas last drew with.
+async function screenPoint(page, point) {
+  return page.locator(canvasSelector).evaluate((canvas, { x, y }) => {
+    const bounds = canvas.getBoundingClientRect();
+    const zoom = Number(canvas.dataset.zoom);
+    const screen = { x: bounds.left + Number(canvas.dataset.cameraX) + x * zoom, y: bounds.top + Number(canvas.dataset.cameraY) + y * zoom };
+    return { ...screen, onCanvas: document.elementFromPoint(screen.x, screen.y) === canvas };
+  }, point);
+}
+async function doubleClick(page, point) {
+  await page.bringToFront();
+  const screen = await screenPoint(page, point);
+  assert(screen.onCanvas, 'The point ' + pointKey(point) + ' is visible on the game canvas');
+  await page.mouse.dblclick(screen.x, screen.y);
+}
+async function sentMoves(page, start) {
+  return page.evaluate((start) => window.__sent.slice(start).filter((message) => message.type === 'move'), start);
 }
 
 try {
@@ -259,16 +323,23 @@ try {
   await alice.waitForTimeout(grid.stepDurationMs + 50);
   assert.equal((await state(alice)).x, beforeTap.x + grid.size, 'A released tap does not queue another tile');
 
-  await focus(alice);
+  // Hold until three quarters across the third tile. By then the fourth step
+  // has been queued, so releasing withdraws it rather than walking on.
+  const aliceId = await alice.evaluate(() => window.__selfId);
   const beforeHeld = await state(alice);
-  await alice.keyboard.down('d');
-  await alice.waitForTimeout(grid.stepDurationMs * 2.5);
-  await alice.keyboard.up('d');
+  const cancelsBefore = await alice.evaluate(() => window.__sent.filter((message) => message.type === 'move-cancel').length);
+  await Promise.all([startSampling(alice), startSampling(bob, aliceId)]);
+  await holdUntilPast(alice, ['d'], beforeHeld.x + grid.size * 2.75);
   await waitIdle(alice);
+  const [ownSamples, watchedSamples] = await Promise.all([stopSampling(alice), stopSampling(bob)]);
   const afterHeld = await state(alice);
-  assert(afterHeld.x - beforeHeld.x >= grid.size * 2, 'Holding a key continues walking tile by tile');
-  assert.equal((afterHeld.x - beforeHeld.x) % grid.size, 0);
+  assert.equal(afterHeld.x, beforeHeld.x + grid.size * 3, 'Releasing a held key finishes the current tile, never one extra');
   assert.equal(afterHeld.y, beforeHeld.y);
+  assert(await alice.evaluate((count) => window.__sent.filter((message) => message.type === 'move-cancel').length > count, cancelsBefore), 'Releasing late in a tile withdraws the queued step');
+  await alice.waitForTimeout(grid.stepDurationMs + 50);
+  assert.equal((await state(alice)).x, afterHeld.x, 'A released key takes no further tile');
+  assertContinuous(ownSamples, beforeHeld.x, afterHeld.x, grid.size / grid.stepDurationMs, 'Holding a key continues walking tile by tile');
+  assertContinuous(watchedSamples, beforeHeld.x, afterHeld.x, grid.size / grid.stepDurationMs, 'Another screen sees the same continuous walk');
 
   const sentBefore = await alice.evaluate(() => window.__sent.length);
   await alice.keyboard.down('w');
@@ -286,6 +357,19 @@ try {
     previous = move;
   }
   console.log('Tap, smooth interpolation, held repeat, and cardinal movement passed');
+
+  // Two sprint strides follow each other without a pause, and releasing in
+  // the middle of the second finishes that stride.
+  await go(alice, { x: 696, y: 696 });
+  const beforeHeldSprint = await state(alice);
+  await startSampling(alice);
+  await holdUntilPast(alice, ['Shift', 'd'], beforeHeldSprint.x + grid.size * 4.5);
+  await waitIdle(alice);
+  const sprintSamples = await stopSampling(alice);
+  const afterHeldSprint = await state(alice);
+  assert.equal(afterHeldSprint.x, beforeHeldSprint.x + grid.size * 6, 'A held sprint stops at the end of its current stride');
+  assertContinuous(sprintSamples, beforeHeldSprint.x, afterHeldSprint.x, grid.size * 3 / grid.stepDurationMs, 'Held sprint strides follow without a pause');
+  console.log('Continuous held walking, release, and held sprinting passed');
 
   await go(alice, { x: 648, y: 696 });
   await go(bob, { x: 600, y: 696 });
@@ -336,6 +420,27 @@ try {
   await go(alice, { x: 648, y: 72 });
   await bounce(alice, 'w');
   console.log('Landing-based carpet entry, chair seating, and solid wall blocking passed');
+
+  // A single click still only focuses the canvas; double-clicking uses portals.
+  await go(alice, { x: 648, y: 72 });
+  await waitIdle(alice);
+  const beforeClick = await state(alice);
+  const sentBeforeClick = await alice.evaluate(() => window.__sent.length);
+  const clickPoint = await screenPoint(alice, { x: 744, y: 72 });
+  await alice.mouse.click(clickPoint.x, clickPoint.y);
+  await alice.waitForTimeout(grid.stepDurationMs * 2 + 200);
+  assert.equal((await sentMoves(alice, sentBeforeClick)).length, 0, 'A single click sends no step');
+  assert(samePoint(beforeClick, await state(alice)), 'A single click does not move the character');
+
+  // Portal arrival preserves the same chair and carpet landing rules as walking.
+  const studioChair2 = world.chairs.find((chair) => chair.id === 'studio-2');
+  await doubleClick(alice, studioChair2);
+  await alice.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]').dataset.portaling === 'true');
+  await waitAt(alice, studioChair2);
+  await dismissPrompt(alice);
+  await alice.waitForFunction(() => window.__players.find((player) => player.id === window.__selfId).seated);
+  assert.equal((await state(alice)).carpet, studio.id, 'Portal arrival on a chair joins its carpet and sits down');
+  console.log('Single click stays put; double-click portals onto a chair and joins its carpet');
   assert.deepEqual(errors, [], 'No uncaught browser errors');
   console.log('PASS grid movement', JSON.stringify({ screenshots: output, browserErrors: errors }));
 } catch (error) {

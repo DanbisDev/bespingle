@@ -94,6 +94,10 @@ async function position(page) {
 async function axis(page, target, coordinate) {
   target = snap(target, coordinate === 'x' ? originX : originY);
   const canvas = page.locator('[data-testid="game-canvas"]');
+  // data-x and data-y are the tile a step leaves until it lands. A key held
+  // into a dialog may already have queued a step past it, so read the start
+  // only once that walk has finished.
+  await page.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]').dataset.moving !== 'true', null, { timeout: 2500 });
   for (let steps = 0; steps < 30; steps++) {
     const start = await position(page);
     if (start[coordinate] === target) return;

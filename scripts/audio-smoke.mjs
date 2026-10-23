@@ -23,7 +23,7 @@ try {
   await page.goto('http://localhost:5555');
   await page.getByLabel('Your display name').fill('Audio check');
   await page.getByRole('button', { name: 'Enter the office', exact: true }).click();
-  const settings = () => page.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  const settings = () => page.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
   const done = () => page.getByRole('button', { name: 'Done', exact: false }).click();
   const toggle = () => page.getByRole('checkbox', { name: 'Noise suppression', exact: true });
   await settings();

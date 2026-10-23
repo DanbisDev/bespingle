@@ -118,3 +118,47 @@ func TestPortalCanCrossWall(t *testing.T) {
 		t.Fatal("portal did not land across wall", p)
 	}
 }
+
+func TestPortalCannotReplaceWalkingOrQueueAfterPortal(t *testing.T) {
+	t.Run("walking", func(t *testing.T) {
+		h, clock := testHub(t, testWorld())
+		a := unitClient(t, h, "Alice")
+		if result := requestMove(t, h, a, 1, 120, 360, "right"); !result.Accepted {
+			t.Fatal(result)
+		}
+		advance(h, clock, 140*time.Millisecond)
+		if result := requestPortal(t, h, a, 408, 216); result.Reason != "busy" {
+			t.Fatal("portal replaced in-flight walk", result)
+		}
+		if result := requestMove(t, h, a, 2, 168, 360, "right"); !result.Accepted {
+			t.Fatal(result)
+		}
+		if result := requestPortal(t, h, a, 408, 216); result.Reason != "busy" {
+			t.Fatal("portal replaced queued walk", result)
+		}
+		advance(h, clock, 340*time.Millisecond)
+		if p := snapshot(h, a); p.X != 168 || p.Move != nil || p.Next != nil {
+			t.Fatal("walking queue changed", p)
+		}
+	})
+	t.Run("portal", func(t *testing.T) {
+		h, clock := testHub(t, testWorld())
+		a := unitClient(t, h, "Alice")
+		if result := requestPortal(t, h, a, 408, 216); !result.Accepted {
+			t.Fatal(result)
+		}
+		// Even during the final queueing window, portal travel cannot queue a walk
+		// or replace itself with a second portal before it lands.
+		advance(h, clock, time.Duration(portalDurationMs-100)*time.Millisecond)
+		if result := requestMove(t, h, a, 1, 456, 216, "right"); result.Reason != "busy" {
+			t.Fatal("walk queued behind portal", result)
+		}
+		if result := requestPortal(t, h, a, 120, 216); result.Reason != "busy" {
+			t.Fatal("portal replaced portal", result)
+		}
+		advance(h, clock, 100*time.Millisecond)
+		if p := snapshot(h, a); p.X != 408 || p.Y != 216 || p.Move != nil || p.Next != nil {
+			t.Fatal("portal landing changed", p)
+		}
+	})
+}
