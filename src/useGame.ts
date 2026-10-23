@@ -110,7 +110,6 @@ export function useGame() {
         const carpetId = message.players.find((player) => player.id === currentSelf.current)?.carpetId ?? '';
         if (carpetId !== currentCarpet.current) {
           setMessages([]);
-          setScrimbaGames({});
           setScrimbaOpen('');
         }
         currentCarpet.current = carpetId;
@@ -126,7 +125,7 @@ export function useGame() {
         }
       } else if (message.type === 'scrimba-state') {
         if (message.carpetId === currentCarpet.current) {
-          setScrimbaGames((current) => ({ ...current, [message.id]: message }));
+          setScrimbaGames((current) => ({ ...Object.fromEntries(Object.entries(current).filter(([, item]) => item.expiresAt > serverNow())), [message.id]: message }));
         }
       } else if (message.type === 'move-result') {
         const pending = pendingMoves.current.get(message.requestId);
@@ -159,7 +158,7 @@ export function useGame() {
     ws.onerror = () => {
       if (socket.current === ws) setError('Could not reach the office. Check that the Go server is running.');
     };
-  }, [clearMoves]);
+  }, [clearMoves, serverNow]);
 
   useEffect(() => () => {
     socket.current?.close();

@@ -67,9 +67,13 @@ To start them separately, run `npm run dev:backend` and
   keys for later guesses. Each player solves independently. Click a
   player's name to inspect their board: only colors are shared until you finish
   your own puzzle, then the emojis and solution are revealed. Close and reopen
-  from the invitation to continue. Scrimba uses WebSocket events and transient
+  from the invitation to continue. Joined games also have a **Resume Scrimba**
+  button on their carpet, including after you walk away and return. Scrimba uses WebSocket events and transient
   server/browser memory, with no database or browser storage. Games expire after
   two hours or a server restart; leaving the office loses your player identity.
+  Disconnected players are removed, games support up to 64 connected players,
+  and each creator can have three unfinished boards. Completed games can be
+  retired early when the server needs space for a new game.
 - Click **Share screen** on a carpet to choose a tab, window, or display. Everyone
   on that carpet can watch alongside your camera; use **Expand** for a larger view.
   Stop with **Stop sharing** or the browser’s sharing control. Leaving the carpet

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -186,5 +187,118 @@ func TestScrimbaFlow(t *testing.T) {
 	}
 	if len(h.scrimba) != 1 {
 		t.Fatal("expired games weren't removed")
+	}
+}
+
+func TestScrimbaCapacityAndCleanup(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	alice := unitClient(t, h, "Alice")
+	walkTo(t, h, clock, alice, 120, 168)
+	bob := unitClient(t, h, "Bob")
+	walkTo(t, h, clock, bob, 168, 168)
+	start := func(c *client) error {
+		return h.handle(c, marshal(map[string]any{"type": "chat", "carpetId": "a", "text": "/scrimba"}))
+	}
+	for i := 0; i < maxScrimbaGamesPerCreator; i++ {
+		if err := start(alice); err != nil {
+			t.Fatal(err)
+		}
+		advance(h, clock, 11*time.Second)
+		drain(alice)
+		drain(bob)
+	}
+	if err := start(alice); err == nil {
+		t.Fatal("creator exhausted global capacity")
+	}
+	if err := start(bob); err != nil {
+		t.Fatalf("another creator cannot start: %v", err)
+	}
+	// Old connections must not continue consuming the global game quota.
+	h.mu.Lock()
+	for i := len(h.scrimba); i < maxScrimbaGames; i++ {
+		id := fmt.Sprintf("abandoned-%d", i)
+		h.scrimba[id] = &scrimbaGame{ID: id, Created: clock.now(), Players: map[string]*scrimbaPlayer{"disconnected": {ID: "disconnected"}}}
+	}
+	h.mu.Unlock()
+	advance(h, clock, 11*time.Second)
+	drain(alice)
+	drain(bob)
+	if err := start(bob); err != nil {
+		t.Fatalf("abandoned games block new games: %v", err)
+	}
+	if len(h.scrimba) != maxScrimbaGamesPerCreator+2 {
+		t.Fatal("abandoned games were retained")
+	}
+	// Completing a board must allow the creator to keep playing new games.
+	h.mu.Lock()
+	for _, game := range h.scrimba {
+		if game.Creator == alice.player.ID {
+			game.Players[alice.player.ID].Done = true
+			break
+		}
+	}
+	h.mu.Unlock()
+	if err := start(alice); err != nil {
+		t.Fatalf("completed board still consumes creator limit: %v", err)
+	}
+	h.mu.Lock()
+	for i := len(h.scrimba); i < maxScrimbaGames; i++ {
+		id := fmt.Sprintf("finished-%d", i)
+		h.scrimba[id] = &scrimbaGame{ID: id, Created: clock.now(), Players: map[string]*scrimbaPlayer{alice.player.ID: {ID: alice.player.ID, Done: true}}}
+	}
+	h.mu.Unlock()
+	advance(h, clock, 11*time.Second)
+	drain(alice)
+	drain(bob)
+	if err := start(bob); err != nil {
+		t.Fatalf("finished boards block a new game: %v", err)
+	}
+	if len(h.scrimba) != maxScrimbaGames {
+		t.Fatal("global memory limit not preserved")
+	}
+}
+
+func TestScrimbaParticipantLimitAndDisconnect(t *testing.T) {
+	h, clock := testHub(t, testWorld())
+	alice := unitClient(t, h, "Alice")
+	walkTo(t, h, clock, alice, 120, 168)
+	bob := unitClient(t, h, "Bob")
+	walkTo(t, h, clock, bob, 168, 168)
+	if err := h.handle(alice, marshal(map[string]any{"type": "chat", "carpetId": "a", "text": "/scrimba"})); err != nil {
+		t.Fatal(err)
+	}
+	var game *scrimbaGame
+	h.mu.Lock()
+	for _, g := range h.scrimba {
+		game = g
+	}
+	for i := 1; i < maxScrimbaPlayers; i++ {
+		id := fmt.Sprintf("retained-%d", i)
+		h.clients[id] = &client{send: make(chan []byte, 128), done: make(chan struct{}), player: player{ID: id}}
+		game.Players[id] = &scrimbaPlayer{ID: id}
+	}
+	h.mu.Unlock()
+	join := func() error { return h.handle(bob, marshal(map[string]any{"type": "scrimba-join", "id": game.ID})) }
+	if err := join(); err == nil {
+		t.Fatal("participant limit not enforced")
+	}
+	// Simulate a full send queue removing a connection without remove().
+	h.mu.Lock()
+	dropped := h.clients["retained-1"]
+	delete(h.clients, "retained-1")
+	dropped.stop()
+	h.mu.Unlock()
+	if err := join(); err != nil {
+		t.Fatalf("disconnected participant blocks joining: %v", err)
+	}
+	if len(game.Players) != maxScrimbaPlayers {
+		t.Fatal("roster grew beyond limit")
+	}
+	h.remove(bob)
+	if game.Players[bob.player.ID] != nil {
+		t.Fatal("disconnected identity retained")
+	}
+	if game.Players[alice.player.ID] == nil {
+		t.Fatal("connected player's progress was removed")
 	}
 }

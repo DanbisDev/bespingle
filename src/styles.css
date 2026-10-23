@@ -331,3 +331,5 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .whiteboard-tool[aria-pressed="true"] { background: #183b3c; border-color: #376c68; color: #a7eee0; }
 .whiteboard-close { margin-left: auto; }
 .whiteboard-canvas { display: block; width: 100%; height: auto; aspect-ratio: 16/9; cursor: crosshair; touch-action: none; background: #1a2233; }
+
+.scrimba-sessions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
