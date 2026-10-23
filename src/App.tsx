@@ -155,6 +155,21 @@ export default function App() {
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
   const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || isMediaPrompt;
+  const settingsOpen = editingMicrophone && connected && !!self;
+  const backgroundOpen = editingBackground && connected && !!self;
+
+  // A device error shown in a dialog was already seen there, so it must not
+  // follow the person into the banner once that dialog goes away by any route.
+  const deviceDialogs = useRef({ settingsOpen, backgroundOpen, isMediaPrompt });
+  const { clearError: clearMediaError } = media;
+  useEffect(() => {
+    const previous = deviceDialogs.current;
+    deviceDialogs.current = { settingsOpen, backgroundOpen, isMediaPrompt };
+    if ((previous.settingsOpen && !settingsOpen) || (previous.backgroundOpen && !backgroundOpen) || (previous.isMediaPrompt && !isMediaPrompt)) clearMediaError();
+  }, [settingsOpen, backgroundOpen, isMediaPrompt, clearMediaError]);
+
+  const bannerError = connected ? game.serverError || (!isMediaPrompt && !editingBackground && !editingMicrophone ? media.error : '') : '';
+  const dismissBanner = () => { if (game.serverError) game.clearServerError(); else clearMediaError(); };
 
   return <div className="app-shell">
     <header className="topbar">
@@ -200,7 +215,7 @@ export default function App() {
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
       </footer>
-      {(game.error || (media.error && !isMediaPrompt && !editingBackground && !editingMicrophone)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
+      {bannerError && <div key={game.serverError ? `server-${game.serverErrorId}` : 'media'} className="inline-error" role="alert"><span>{bannerError}</span><button type="button" className="inline-error-close" aria-label="Dismiss error" title="Dismiss" onClick={dismissBanner}><Icon name="close" /></button></div>}
     </main>
 
     {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
@@ -214,7 +229,7 @@ export default function App() {
 
     {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.send({ type: 'profile', name: name.trim(), avatar, customAvatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={avatar} customAvatar={customAvatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required />{picker}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save profile<Icon name="check" /></button></div></form></Dialog>}
 
-    {editingMicrophone && connected && self && <Dialog title="Audio and video settings" description="Reduce background noise so others can hear your voice more clearly, and choose how much video you send.">
+    {settingsOpen && self && <Dialog title="Audio and video settings" description="Reduce background noise so others can hear your voice more clearly, and choose how much video you send.">
       <label className="noise-setting"><input type="checkbox" checked={media.noiseSuppression} disabled={media.busy || !media.noiseSupported} onChange={(event) => { void media.chooseNoiseSuppression(event.target.checked); }} />Noise suppression</label>
       <p className="media-note" role="status">{!media.noiseSupported ? 'Noise suppression is unavailable in this browser.' : !self.mic ? 'Your microphone is off. This choice applies when you turn it on.' : media.noiseActive === undefined ? 'Your browser does not report whether noise suppression is active.' : media.noiseActive !== media.noiseSuppression ? `Noise suppression is currently ${media.noiseActive ? 'on' : 'off'}. Turn your microphone off and on to apply your choice; some browsers require this.` : media.noiseActive ? 'Noise suppression is active.' : 'Noise suppression is off.'}</p>
       <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice lasts until you reload this page.</p>
@@ -226,7 +241,7 @@ export default function App() {
       <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
+    {backgroundOpen && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
       {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
       <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
       {media.error && <p className="form-error" role="alert">{media.error}</p>}

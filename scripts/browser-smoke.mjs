@@ -73,7 +73,7 @@ async function client(name, avatar) {
       return stream;
     };
     const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function(data) { if (this.url.endsWith('/ws')) window.__wire.push(JSON.parse(data)); return send.call(this, data); };
+    WebSocket.prototype.send = function(data) { if (this.url.endsWith('/ws')) { window.__socket = this; window.__wire.push(JSON.parse(data)); } return send.call(this, data); };
   });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(`${name}: ${error.message}`));
@@ -206,6 +206,24 @@ try {
   await alice.waitForTimeout(100);
   await alice.screenshot({ path: `${output}/02-game-area.png`, fullPage: true });
   console.log('Full-window night layout, resize, and wheel zoom passed', { zoomBefore, zoomIn, zoomOut });
+
+  // Off any carpet, a signal is rejected by the server: the error #11 is about.
+  const rejectSignal = () => alice.evaluate(() => window.__socket.send(JSON.stringify({ type: 'signal', to: '0'.repeat(32), sessionId: 'smoke', candidate: { candidate: '' } })));
+  const banner = alice.locator('.inline-error').filter({ hasText: 'signaling requires two participants on the same carpet' });
+  await rejectSignal();
+  await banner.waitFor();
+  const shownAt = Date.now();
+  await banner.waitFor({ state: 'hidden', timeout: 8000 });
+  const expiredAfter = Date.now() - shownAt;
+  assert(expiredAfter >= 4500, `Server errors stay up for five seconds (${expiredAfter}ms)`);
+  await rejectSignal();
+  await banner.waitFor();
+  const dismiss = banner.getByRole('button', { name: 'Dismiss error', exact: true });
+  await dismiss.focus();
+  await alice.keyboard.press('Enter');
+  await banner.waitFor({ state: 'hidden', timeout: 1000 });
+  assert.equal(await alice.locator('.inline-error').count(), 0, 'A dismissed server error leaves no banner');
+  console.log('Server errors expire after five seconds and close from the keyboard', { expiredAfter });
 
   // Straight walk to the middle carpet, stopping as soon as the prompt opens.
   await alice.bringToFront();
