@@ -4,6 +4,10 @@ import type { Player } from './world';
 import type { Send, Signal } from './protocol';
 import { createCameraBackground } from './cameraBackground';
 import type { CameraBackground, CameraProcessor } from './cameraBackground';
+import { encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
+import { currentLoad, subscribeLoad, watchEncoders } from './deviceLoad';
+import { LoadStepper } from './loadSteps';
+import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
 import { createNoiseFilter, noiseFilterSupported } from './noiseFilter';
 import type { NoiseFilter } from './noiseFilter';
 
@@ -26,6 +30,22 @@ type Peer = {
   candidates: RTCIceCandidateInit[];
   queue: Promise<void>;
 };
+
+// Caps the sender in place. Encoding parameters never renegotiate, and they
+// survive replaceTrack, but a scale factor depends on the track's size.
+async function capSender(sender: RTCRtpSender, target: SenderTarget) {
+  const parameters = sender.getParameters();
+  // The answerer's senders have no encodings until its answer is applied.
+  if (!parameters.encodings?.length) return;
+  const settings = sender.track?.getSettings();
+  const encoding = encodingFor(target, settings);
+  parameters.encodings = parameters.encodings.map((item) => {
+    const next = { ...item, ...encoding };
+    for (const key of ['maxFramerate', 'maxBitrate'] as const) if (next[key] === undefined) delete next[key];
+    return next;
+  });
+  await sender.setParameters(parameters);
+}
 
 // Discovery only. There are deliberately no TURN URLs or server media endpoints.
 const RTC_CONFIG: RTCConfiguration = {
@@ -66,6 +86,17 @@ export function usePeerMedia(
   const backgroundChoice = useRef<CameraBackground>('none');
   const backgroundImage = useRef<File | undefined>(undefined);
   const processing = useRef<AbortController | null>(null);
+  const [quality, setQuality] = useState<VideoQuality>(readVideoQuality);
+  const qualityChoice = useRef(quality);
+  qualityChoice.current = quality;
+  const [cameraOn, setCameraOn] = useState(false);
+  const participants = self?.carpetId ? players.filter((player) => player.carpetId === self.carpetId).length : 1;
+  // Further step-downs for device load, below what the count alone sets.
+  const [loadSteps, setLoadSteps] = useState(0);
+  const headroom = loadHeadroom({ participants, quality, sharing: !!screenStream });
+  const room = useRef(headroom);
+  room.current = headroom;
+  const target = useRef<QualityTarget>(qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) }));
   const context = useRef({ self, players });
   context.current = { self, players };
   const epoch = useRef(0);
@@ -86,6 +117,7 @@ export function usePeerMedia(
     local.current?.getTracks().forEach((track) => track.stop());
     local.current = null;
     setLocalStream(null);
+    setCameraOn(false);
     setNoiseActive(undefined);
     setFiltering(false);
   }, [stopFilter]);
@@ -112,6 +144,20 @@ export function usePeerMedia(
     if (peers.current.get(peer.id) !== peer) return;
     console.warn('Direct peer connection:', failure);
     setRemoteMedia((current) => ({ ...current, [peer.id]: { stream: peer.stream, screenStream: peer.screenStream, status: 'failed' } }));
+  }, []);
+
+  const applyQuality = useCallback((peer: Peer) => {
+    peer.queue = peer.queue.then(async () => {
+      if (peers.current.get(peer.id) !== peer) return;
+      const [, camera, screenSlot] = peer.pc.getTransceivers();
+      try {
+        if (camera) await capSender(camera.sender, target.current.camera);
+        if (screenSlot) await capSender(screenSlot.sender, target.current.screen);
+      } catch (failure) {
+        // Quality is best effort and must never interrupt the call.
+        if (peers.current.get(peer.id) === peer) console.warn('Video quality:', failure);
+      }
+    });
   }, []);
 
   const createPeer = useCallback((id: string, sessionId: string, offering = true): Peer => {
@@ -175,6 +221,7 @@ export function usePeerMedia(
       if (signal.description) {
         await target.pc.setRemoteDescription(signal.description);
         for (const candidate of target.candidates.splice(0)) await target.pc.addIceCandidate(candidate);
+        if (signal.description.type === 'answer') applyQuality(target);
         if (signal.description.type === 'offer') {
           for (const [index, transceiver] of target.pc.getTransceivers().entries()) {
             transceiver.direction = 'sendrecv';
@@ -188,6 +235,7 @@ export function usePeerMedia(
           if (peers.current.get(from) === target) {
             send({ type: 'signal', to: from, sessionId: target.sessionId, description: target.pc.localDescription!.toJSON() });
           }
+          applyQuality(target);
         }
       } else if (signal.candidate) {
         if (signal.candidate.candidate?.includes(' typ relay ')) return;
@@ -195,7 +243,7 @@ export function usePeerMedia(
         else target.candidates.push(signal.candidate);
       }
     }).catch((failure) => reportFailure(target, failure));
-  }, [createPeer, removePeer, reportFailure, send]);
+  }, [applyQuality, createPeer, removePeer, reportFailure, send]);
 
   useLayoutEffect(() => {
     signalHandler.current = receiveSignal;
@@ -257,8 +305,22 @@ export function usePeerMedia(
         if (peers.current.get(member.id) !== peer) return;
         send({ type: 'signal', to: member.id, sessionId: peer.sessionId, description: peer.pc.localDescription!.toJSON() });
       }).catch((failure) => reportFailure(peer, failure));
+      applyQuality(peer);
     }
-  }, [players, self, createPeer, removePeer, reportFailure, send]);
+  }, [players, self, applyQuality, createPeer, removePeer, reportFailure, send]);
+
+  // In Audio only the camera keeps capturing, so switching back is instant, but
+  // peers are told it is off so their tile shows the avatar, not a dead frame.
+  const publishStatus = useCallback(() => {
+    const stream = local.current;
+    const camera = stream?.getVideoTracks().some((track) => track.readyState === 'live') ?? false;
+    setCameraOn(camera);
+    send({ type: 'media',
+      mic: stream?.getAudioTracks().some((track) => track.readyState === 'live') ?? false,
+      screen: screen.current?.getVideoTracks().some((track) => track.readyState === 'live') ?? false,
+      camera: camera && qualityChoice.current !== 'audio',
+    });
+  }, [send]);
 
   const publishCapture = useCallback((raw: MediaStream | null) => {
     capture.current = raw;
@@ -271,12 +333,8 @@ export function usePeerMedia(
     const stream = tracks.length ? new MediaStream(tracks) : null;
     local.current = stream;
     setLocalStream(stream);
-    send({ type: 'media',
-      mic: stream?.getAudioTracks().some((track) => track.readyState === 'live') ?? false,
-      screen: screen.current?.getVideoTracks().some((track) => track.readyState === 'live') ?? false,
-      camera: stream?.getVideoTracks().some((track) => track.readyState === 'live') ?? false,
-    });
-  }, [send]);
+    publishStatus();
+  }, [publishStatus]);
 
   const syncSenders = useCallback(async () => {
     const tracks = local.current?.getTracks() ?? [];
@@ -292,7 +350,38 @@ export function usePeerMedia(
         }
       })
     )));
-  }, [reportFailure]);
+    // A replaced track may differ in size, which changes its scale factor.
+    for (const peer of peers.current.values()) applyQuality(peer);
+  }, [applyQuality, reportFailure]);
+
+  // The device-load monitor is shared with the rest of the app. This lends it
+  // the outgoing video senders and turns its level into load steps.
+  useEffect(() => {
+    const stepper = new LoadStepper();
+    const update = () => setLoadSteps(stepper.update(currentLoad(), performance.now(), room.current));
+    const unsubscribe = subscribeLoad(update);
+    const unwatch = watchEncoders(() => [...peers.current.values()].flatMap(({ pc }) => (
+      pc.connectionState === 'connected' ? pc.getTransceivers().slice(1, 3).flatMap(({ sender }) => sender.track ? [sender] : []) : []
+    )));
+    // Holds elapse between level changes, so the stepper also runs on a clock.
+    const timer = setInterval(update, 1000);
+    return () => { clearInterval(timer); unwatch(); unsubscribe(); };
+  }, []);
+
+  // Every client sees the same count, so a carpet steps down together.
+  useEffect(() => {
+    const next = qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) });
+    if (JSON.stringify(next) === JSON.stringify(target.current)) return;
+    target.current = next;
+    for (const peer of peers.current.values()) applyQuality(peer);
+  }, [participants, quality, loadSteps, headroom, applyQuality]);
+
+  const chooseQuality = useCallback((choice: VideoQuality) => {
+    qualityChoice.current = choice;
+    setQuality(choice);
+    saveVideoQuality(choice);
+    publishStatus();
+  }, [publishStatus]);
 
   const strongStopped = useCallback((message: string) => (
     `Strong noise filtering stopped. ${message} ${standardSupported ? 'Your microphone is using Standard noise suppression.' : 'Your microphone is being sent without noise suppression.'}`
@@ -563,5 +652,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
 }

@@ -77,7 +77,7 @@ try {
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Microphone settings', 'The ⋯ follows the mic button in keyboard order');
   await page.keyboard.press('Enter');
-  await page.getByRole('dialog', { name: 'Microphone settings', exact: true }).waitFor();
+  await page.getByRole('dialog', { name: 'Audio and video settings', exact: true }).waitFor();
   await done();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
 

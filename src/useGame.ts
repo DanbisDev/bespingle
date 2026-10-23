@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Player } from './world';
-import type { ChatMessage, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
+import type { CancelMove, ChatMessage, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
 
 type PendingMove = { resolve: (result: MoveResult) => void; timer: ReturnType<typeof setTimeout> };
 
@@ -41,7 +41,7 @@ export function useGame() {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(message));
   }, []);
 
-  const move: Move = useCallback((x, y, facing, sprint = false) => new Promise<MoveResult>((resolve) => {
+  const requestMove = useCallback((message: Record<string, unknown>) => new Promise<MoveResult>((resolve) => {
     const ws = socket.current;
     const requestId = ++nextMoveId.current;
     if (ws?.readyState !== WebSocket.OPEN) {
@@ -53,8 +53,11 @@ export function useGame() {
       resolve({ type: 'move-result', requestId, accepted: false, reason: 'timeout' });
     }, 3000);
     pendingMoves.current.set(requestId, { resolve, timer });
-    ws.send(JSON.stringify({ type: 'move', requestId, x, y, facing, sprint }));
+    ws.send(JSON.stringify({ ...message, requestId }));
   }), []);
+
+  const move: Move = useCallback((x, y, facing, sprint = false) => requestMove({ type: 'move', x, y, facing, sprint }), [requestMove]);
+  const cancelMove: CancelMove = useCallback(() => requestMove({ type: 'move-cancel' }), [requestMove]);
 
   const leave = useCallback(() => {
     const current = socket.current;
@@ -146,5 +149,5 @@ export function useGame() {
     clearMoves();
   }, [clearMoves]);
 
-  return { messages, players, selfId, status, error, join, leave, send, move, serverNow, signalHandler };
+  return { messages, players, selfId, status, error, join, leave, send, move, cancelMove, serverNow, signalHandler };
 }
