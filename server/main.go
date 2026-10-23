@@ -175,7 +175,10 @@ func crossesRect(from, to point, r rect) bool {
 
 func finite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
 
+const portalDurationMs int64 = 1400
+
 type movement struct {
+	Portal     string  `json:"portal,omitempty"`
 	ToX        float64 `json:"toX"`
 	ToY        float64 `json:"toY"`
 	StartedAt  int64   `json:"startedAt"`
@@ -364,9 +367,9 @@ func (h *hub) broadcastLocked() {
 	}
 }
 
-// Current tiles and every tile on an in-flight path are exclusive. Keeping the
-// source occupied until arrival also prevents swaps and followers walking
-// through an avatar while it is still crossing the edge of its old tile.
+// Walking reserves its entire path; portals reserve only their endpoints.
+// Keeping sources occupied until landing prevents followers from walking through
+// departing avatars. Portal partners deliberately exchange their reserved tiles.
 func (h *hub) occupiedLocked(position point, except *client) bool {
 	for _, c := range h.clients {
 		if c == except {
@@ -376,7 +379,13 @@ func (h *hub) occupiedLocked(position point, except *client) bool {
 			return true
 		}
 		if m := c.player.Move; m != nil {
-			// Moves are axis aligned. Reserve intermediate sprint tiles too so
+			if (point{X: m.ToX, Y: m.ToY}) == position {
+				return true
+			}
+			if m.Portal != "" {
+				continue
+			}
+			// Walks are axis aligned. Reserve intermediate sprint tiles too so
 			// another player cannot enter or cross the path before arrival.
 			if c.player.X == m.ToX && position.X == c.player.X && position.Y >= math.Min(c.player.Y, m.ToY) && position.Y <= math.Max(c.player.Y, m.ToY) ||
 				c.player.Y == m.ToY && position.Y == c.player.Y && position.X >= math.Min(c.player.X, m.ToX) && position.X <= math.Max(c.player.X, m.ToX) {
@@ -558,6 +567,7 @@ func (h *hub) handle(c *client, data []byte) error {
 			Y         *float64 `json:"y"`
 			Facing    string   `json:"facing"`
 			Sprint    bool     `json:"sprint"`
+			Portal    bool     `json:"portal"`
 		}
 		if err := strictDecode(data, &msg); err != nil || msg.RequestID == 0 || msg.RequestID > 9007199254740991 || msg.X == nil || msg.Y == nil {
 			return errors.New("invalid movement message")
@@ -568,6 +578,37 @@ func (h *hub) handle(c *client, data []byte) error {
 		}
 		from := point{X: c.player.X, Y: c.player.Y}
 		to, onGrid := h.world.gridPoint(point{X: *msg.X, Y: *msg.Y})
+		if msg.Portal {
+			if !onGrid || from == to {
+				h.moveResultLocked(c, msg.RequestID, false, "invalid")
+				return nil
+			}
+			// Portals bypass the intervening floor, but must land on a legal tile.
+			if !h.world.canMove(to, to) {
+				h.moveResultLocked(c, msg.RequestID, false, "wall")
+				return nil
+			}
+			var partner *client
+			for _, peer := range h.clients {
+				if peer != c && (point{X: peer.player.X, Y: peer.player.Y}) == to && peer.player.Move == nil {
+					partner = peer
+				}
+			}
+			if partner == nil && h.occupiedLocked(to, c) {
+				h.moveResultLocked(c, msg.RequestID, false, "occupied")
+				return nil
+			}
+			startedAt := h.now().UnixMilli()
+			c.player.Dance = nil
+			c.player.Move = &movement{ToX: to.X, ToY: to.Y, StartedAt: startedAt, DurationMs: portalDurationMs, Portal: "orange"}
+			if partner != nil {
+				partner.player.Dance = nil
+				partner.player.Move = &movement{ToX: from.X, ToY: from.Y, StartedAt: startedAt, DurationMs: portalDurationMs, Portal: "blue"}
+			}
+			h.moveResultLocked(c, msg.RequestID, true, "")
+			h.broadcastLocked()
+			return nil
+		}
 		if !onGrid || !h.world.validStep(from, to, msg.Facing) {
 			h.moveResultLocked(c, msg.RequestID, false, "invalid")
 			return nil

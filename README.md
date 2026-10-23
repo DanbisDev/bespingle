@@ -31,6 +31,7 @@ To start them separately, run `npm run dev:backend` and
 
 - Choose a display name and one of six pixel avatars. Click your profile to
   change your name or avatar later. Your choices are remembered in a cookie.
+- **Double-click a tile** to summon an orange portal at your feet and a blue portal at the destination. Fall through and pop up at the other end; targeting a stationary player swaps both avatars simultaneously. Walls block portal placement, but portals can cross them.
 - Move with **WASD or the arrow keys**. Hold a key to keep walking; each 48-pixel tile takes 240 ms.
   Hold **Shift** while moving to sprint up to **3 tiles per tick** (240 ms),
   stopping before walls or occupied tiles. Releasing Shift returns to walking.

@@ -41,7 +41,7 @@ export function useGame() {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(message));
   }, []);
 
-  const move: Move = useCallback((x, y, facing, sprint = false) => new Promise<MoveResult>((resolve) => {
+  const move: Move = useCallback((x, y, facing, sprint = false, portal = false) => new Promise<MoveResult>((resolve) => {
     const ws = socket.current;
     const requestId = ++nextMoveId.current;
     if (ws?.readyState !== WebSocket.OPEN) {
@@ -53,7 +53,7 @@ export function useGame() {
       resolve({ type: 'move-result', requestId, accepted: false, reason: 'timeout' });
     }, 3000);
     pendingMoves.current.set(requestId, { resolve, timer });
-    ws.send(JSON.stringify({ type: 'move', requestId, x, y, facing, sprint }));
+    ws.send(JSON.stringify({ type: 'move', requestId, x, y, facing, sprint, portal }));
   }), []);
 
   const leave = useCallback(() => {

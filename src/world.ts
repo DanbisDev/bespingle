@@ -33,6 +33,7 @@ export interface Grid {
 }
 
 export interface Move {
+  portal?: 'orange' | 'blue';
   toX: number;
   toY: number;
   startedAt: number;

@@ -16,7 +16,8 @@
     "test:dance": "node scripts/dance-smoke.mjs",
     "test:backgrounds": "node scripts/background-smoke.mjs",
     "test:audio": "node scripts/audio-smoke.mjs",
-    "test:avatars": "RUN_BROWSER_AVATARS=1 go test -count=1 -run TestAvatarBrowserFlow -v ./server"
+    "test:avatars": "RUN_BROWSER_AVATARS=1 go test -count=1 -run TestAvatarBrowserFlow -v ./server",
+    "test:portals": "node scripts/portal-smoke.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "0.10.32",
