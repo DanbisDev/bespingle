@@ -12,6 +12,10 @@ export function useGame() {
   const [selfId, setSelfId] = useState('');
   const [status, setStatus] = useState<'offline' | 'connecting' | 'connected' | 'lost'>('offline');
   const [error, setError] = useState('');
+  // Server rejections show in the in-game banner and expire on their own. The
+  // id restarts the expiry even when a newer error repeats the same text.
+  const [serverError, setServerError] = useState({ id: 0, message: '' });
+  const serverErrorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const socket = useRef<WebSocket | null>(null);
   const signalHandler = useRef<(signal: Signal) => void>(() => {});
   const pendingSignals = useRef<Signal[]>([]);
@@ -35,6 +39,11 @@ export function useGame() {
       pending.resolve({ type: 'move-result', requestId, accepted: false, reason: 'disconnected' });
     }
     pendingMoves.current.clear();
+  }, []);
+
+  const clearServerError = useCallback(() => {
+    clearTimeout(serverErrorTimer.current);
+    setServerError((current) => current.message ? { id: current.id, message: '' } : current);
   }, []);
 
   const send: Send = useCallback((message) => {
@@ -71,7 +80,8 @@ export function useGame() {
     setSelfId('');
     setStatus('offline');
     setError('');
-  }, [clearMoves]);
+    clearServerError();
+  }, [clearMoves, clearServerError]);
 
   const join = useCallback((name: string, avatar: number, customAvatar = '') => {
     socket.current?.close();
@@ -83,6 +93,7 @@ export function useGame() {
     clockReady.current = false;
     setStatus('connecting');
     setError('');
+    clearServerError();
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${scheme}//${location.host}/ws`);
     socket.current = ws;
@@ -123,8 +134,13 @@ export function useGame() {
       } else if (message.type === 'signal') {
         pendingSignals.current.push(message);
         setSignalRevision((current) => current + 1);
-      } else if (message.type === 'error') {
+      } else if (message.type === 'error' && !currentSelf.current) {
+        // A rejected join explains why the person is still on the join form.
         setError(message.message);
+      } else if (message.type === 'error') {
+        clearTimeout(serverErrorTimer.current);
+        setServerError((current) => ({ id: current.id + 1, message: message.message }));
+        serverErrorTimer.current = setTimeout(clearServerError, 5000);
       }
     };
     ws.onclose = () => {
@@ -137,17 +153,19 @@ export function useGame() {
       setStatus('lost');
       setPlayers([]);
       setSelfId('');
+      clearServerError();
       setError('Connection lost. Rejoin the office to reconnect.');
     };
     ws.onerror = () => {
       if (socket.current === ws) setError('Could not reach the office. Check that the Go server is running.');
     };
-  }, [clearMoves]);
+  }, [clearMoves, clearServerError]);
 
   useEffect(() => () => {
     socket.current?.close();
     clearMoves();
+    clearTimeout(serverErrorTimer.current);
   }, [clearMoves]);
 
-  return { messages, players, selfId, status, error, join, leave, send, move, cancelMove, serverNow, signalHandler };
+  return { messages, players, selfId, status, error, serverError: serverError.message, serverErrorId: serverError.id, clearServerError, join, leave, send, move, cancelMove, serverNow, signalHandler };
 }

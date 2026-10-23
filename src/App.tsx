@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
@@ -195,6 +195,28 @@ export default function App() {
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
   const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || editingVideo || isMediaPrompt;
+  const settingsOpen = editingMicrophone && connected && !!self;
+  const backgroundOpen = editingBackground && connected && !!self;
+  const videoOpen = editingVideo && connected && !!self;
+
+  // Every dialog that shows the device error in itself. One open keeps that
+  // error out of the banner; once one goes away by any route, the error was
+  // already seen there, so it is cleared rather than following the person into
+  // the banner. The render that removes the dialog keeps it out of the alert
+  // banner too, so it is never painted or announced before it is cleared.
+  const deviceDialogs = { microphone: settingsOpen, video: videoOpen, background: backgroundOpen, devices: isMediaPrompt };
+  type DeviceDialog = keyof typeof deviceDialogs;
+  const deviceDialogOpen = Object.values(deviceDialogs).some(Boolean);
+  const previousDialogs = useRef(deviceDialogs);
+  const deviceDialogClosed = (Object.keys(deviceDialogs) as DeviceDialog[]).some((dialog) => previousDialogs.current[dialog] && !deviceDialogs[dialog]);
+  const { clearError: clearMediaError } = media;
+  useLayoutEffect(() => {
+    previousDialogs.current = deviceDialogs;
+    if (deviceDialogClosed) clearMediaError();
+  });
+
+  const bannerError = connected ? game.serverError || (!deviceDialogOpen && !deviceDialogClosed ? media.error : '') : '';
+  const dismissBanner = () => { if (game.serverError) game.clearServerError(); else clearMediaError(); };
 
   return <div className="app-shell">
     <header className="topbar">
@@ -245,7 +267,7 @@ export default function App() {
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
       </footer>
-      {(game.error || (media.error && !isMediaPrompt && !editingBackground && !editingMicrophone && !editingVideo)) && connected && <p className="inline-error" role="alert">{game.error || media.error}</p>}
+      {bannerError && <div key={game.serverError ? `server-${game.serverErrorId}` : 'media'} className="inline-error" role="alert"><span>{bannerError}</span><button type="button" className="inline-error-close" aria-label="Dismiss error" title="Dismiss" onClick={dismissBanner}><Icon name="close" /></button></div>}
     </main>
 
     {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
@@ -259,7 +281,7 @@ export default function App() {
 
     {editingProfile && self && <Dialog title="Your profile" description="This is how your name appears around the office."><form onSubmit={(event) => { event.preventDefault(); if (name.trim()) { saveProfile({ name: name.trim(), avatar, customAvatar, customOption }); game.send({ type: 'profile', name: name.trim(), avatar, customAvatar }); setEditingProfile(false); } }}><div className="profile-preview"><Avatar avatar={avatar} customAvatar={customAvatar} size={70} /></div><label className="field-label" htmlFor="profile-name">Display name</label><input id="profile-name" maxLength={32} value={name} onChange={(event) => setName(event.target.value)} required />{picker}<div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditingProfile(false)}>Cancel</button><button className="primary-button" disabled={!name.trim()}>Save profile<Icon name="check" /></button></div></form></Dialog>}
 
-    {editingMicrophone && connected && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
+    {settingsOpen && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
       <NoiseLevels media={media} disabled={media.busy || media.levelBusy} onChange={(level) => { void media.chooseNoiseLevel(level); }} />
       <p className="media-note" role="status">{noiseNote(media, self.mic)}</p>
       <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice lasts until you reload this page.</p>
@@ -267,7 +289,7 @@ export default function App() {
       <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {editingVideo && connected && self && <Dialog title="Video settings" description="Choose how much video you send.">
+    {videoOpen && self && <Dialog title="Video settings" description="Choose how much video you send.">
       <fieldset className="quality-settings"><legend>Video quality</legend>
         {videoQualities.map(({ id, label, detail }) => <label key={id} className="quality-choice"><input type="radio" name="video-quality" value={id} aria-label={label} aria-describedby={`quality-${id}`} checked={media.quality === id} onChange={() => media.chooseQuality(id)} /><span><strong>{label}</strong><small id={`quality-${id}`}>{detail}</small></span></label>)}
       </fieldset>
@@ -278,7 +300,7 @@ export default function App() {
       <div className="form-actions"><button className="primary-button" disabled={media.busy} onClick={() => setEditingVideo(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
-    {editingBackground && connected && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
+    {backgroundOpen && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
       {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local mirror={mirrorSelfView} selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
       <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
