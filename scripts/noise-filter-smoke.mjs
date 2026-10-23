@@ -75,6 +75,15 @@ function lag(reference, signal, maximum) {
   }
   return best * 480;
 }
+// Delay to the sample, so a bypass that skipped or repeated audio would show.
+function exactLag(raw, filtered, from, to, around) {
+  let best = 0; let bestScore = -Infinity;
+  for (let shift = Math.max(0, around - 960); shift <= around + 960; shift++) {
+    let score = 0; for (let i = from; i < to; i++) score += raw[i] * filtered[i + shift];
+    if (score > bestScore) { bestScore = score; best = shift; }
+  }
+  return best;
+}
 const energy = (samples, from, to) => { let sum = 0; for (let i = from; i < to; i++) sum += samples[i] ** 2; return sum; };
 const decibels = (ratio) => 10 * Math.log10(ratio);
 
@@ -122,9 +131,12 @@ try {
       window.AudioWorkletNode = class extends NativeNode {
         constructor(context, name, options) {
           if (window.__corruptWasm) options = { ...options, processorOptions: { wasm: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1]).buffer } };
-          super(context, name, options); window.__nodes.push(this);
+          super(context, name, options); window.__nodes.push(this); this.__options = options;
         }
       };
+      window.__worklets = [];
+      const addModule = AudioWorklet.prototype.addModule;
+      AudioWorklet.prototype.addModule = function (url, ...rest) { window.__worklets.push(new URL(url, location.href).href); return addModule.call(this, url, ...rest); };
     });
     const page = await context.newPage();
     const errors = [];
@@ -303,19 +315,10 @@ try {
       assert(switched.sameTrack); assert.equal(switched.state, 'live');
       const raw = fromBase64(switched.raw); const filtered = fromBase64(switched.filtered);
       const rawStart = lag(frames(signal), frames(raw), 100);
-      // Delay to the sample, so a bypass that skipped or repeated audio would show.
-      const exactLag = (from, to, around) => {
-        let best = 0; let bestScore = -Infinity;
-        for (let shift = Math.max(0, around - 960); shift <= around + 960; shift++) {
-          let score = 0; for (let i = from; i < to; i++) score += raw[i] * filtered[i + shift];
-          if (score > bestScore) { bestScore = score; best = shift; }
-        }
-        return best;
-      };
       const coarse = lag(frames(raw.subarray(rawStart, rawStart + 3 * RATE)), frames(filtered.subarray(rawStart, rawStart + 3 * RATE)), 10);
       const window = (from, to) => [rawStart + Math.round(from * RATE), rawStart + Math.round(to * RATE)];
-      const filterDelay = exactLag(...window(1, 2.5), coarse);
-      const bypassDelays = [[4.2, 6], [11.2, 13]].map((range) => exactLag(...window(...range), coarse));
+      const filterDelay = exactLag(raw, filtered, ...window(1, 2.5), coarse);
+      const bypassDelays = [[4.2, 6], [11.2, 13]].map((range) => exactLag(raw, filtered, ...window(...range), coarse));
       const residual = ([from, to], delay) => { let error = 0; let total = 0; for (let i = from; i < to; i++) { error += (filtered[i + delay] - raw[i]) ** 2; total += raw[i] ** 2; } return decibels(error / total); };
       // Audio crossing between the filter's context and this one can slip a few samples now and then,
       // so the bypassed stretches are judged in quarter seconds.
@@ -332,11 +335,90 @@ try {
         worst = Math.max(worst, out / Math.max(input, 1e-3));
       }
       console.log(`MEASURED: filtered delay ${filterDelay} samples, bypassed delay ${bypassDelays.join(' and ')}; ${(passthrough * 100).toFixed(0)}% of bypassed quarter seconds match the microphone to within 30 dB (median ${blocks.sort((a, b) => a - b)[blocks.length >> 1].toFixed(1)} dB); filtering before and after the bypasses changes typing by ${resumed.keyboard.toFixed(1)} dB, kitchen ${resumed.kitchen.toFixed(1)} dB, voice with typing ${resumed.mixed.toFixed(1)} dB; largest sample step ${worst.toFixed(2)}× the input's`);
-      for (const delay of bypassDelays) assert(Math.abs(delay - filterDelay) <= 2, `Bypassed audio keeps the filtered delay, so switching neither skips nor repeats audio (${delay} vs ${filterDelay})`);
       assert(passthrough >= 0.75, `Bypassed audio is the microphone audio (${(passthrough * 100).toFixed(0)}% of blocks)`);
       assert(resumed.kitchen <= -10, `Filtering resumes after a bypass (${resumed.kitchen.toFixed(1)} dB)`);
       assert(worst < 1.3, `No click when switching (${worst.toFixed(2)})`);
-      console.log(`PASS: ${label} bypasses RNNoise mid-stream with the microphone audio passed through on time and without a click, and resumes filtering on the same track`);
+      console.log(`PASS: ${label} bypasses RNNoise mid-stream with the microphone audio passed through without a click, and resumes filtering on the same track`);
+      }
+
+      {
+      // Switching neither skips nor repeats audio: the built worklet, with the options the module gives it,
+      // switched at the same moments but rendered offline. Live, a MediaStream track between two contexts
+      // now and then runs dry and inserts 10 ms of silence, at any moment and not only at a switch,
+      // so the recording above cannot judge the delay to the sample.
+      const rendered = await page.evaluate(async ({ module, samples }) => {
+        const { createNoiseFilter } = await import(module);
+        const mic = (await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks()[0];
+        const filter = await createNoiseFilter(mic, () => {});
+        const url = window.__worklets.at(-1); const options = window.__nodes.at(-1).__options;
+        filter.stop(); mic.stop();
+        const bytes = Uint8Array.from(atob(samples), (c) => c.charCodeAt(0));
+        const input = new Float32Array(bytes.buffer);
+        const quantum = 128 / 48000; const lead = 2;
+        const context = new OfflineAudioContext(1, input.length + (lead + 0.5) * 48000, 48000);
+        await context.audioWorklet.addModule(url);
+        const node = new AudioWorkletNode(context, 'rnnoise', options);
+        const buffer = context.createBuffer(1, input.length, 48000); buffer.copyToChannel(input, 0);
+        const player = context.createBufferSource(); player.buffer = buffer;
+        player.connect(node).connect(context.destination);
+        let flowing = false; let answer = () => {};
+        node.port.onmessage = ({ data }) => { if (data.type === 'flowing') flowing = true; if (data.type === 'stats') answer(data); };
+        // Each switch is answered before rendering goes on, so it lands exactly where it was asked for.
+        const bypass = async (bypassed) => { const stats = new Promise((resolve) => { answer = resolve; }); node.port.postMessage({ type: 'bypass', bypassed }); node.port.postMessage({ type: 'stats' }); return (await stats).bypassed === bypassed; };
+        const result = { start: -1, switched: [] };
+        // RNNoise loads while the first quanta render; the fixture starts once the worklet is running.
+        const wait = (time) => context.suspend(time).then(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (!flowing && time + quantum < lead) wait(time + quantum);
+          else if (flowing) {
+            result.start = Math.round((time + quantum) * 48000); player.start(time + quantum);
+            for (const [at, bypassed] of [[3.5, true], [6.5, false], [10.5, true], [13.5, false]]) {
+              context.suspend(time + quantum + at).then(async () => { result.switched.push(await bypass(bypassed)); await context.resume(); });
+            }
+          }
+          await context.resume();
+        });
+        wait(quantum);
+        const output = (await context.startRendering()).getChannelData(0);
+        const view = new Uint8Array(output.buffer); let text = '';
+        for (let i = 0; i < view.length; i += 0x8000) text += String.fromCharCode(...view.subarray(i, i + 0x8000));
+        return { ...result, output: btoa(text) };
+      }, { module, samples: toBase64(signal) });
+      assert(rendered.start >= 0, 'The worklet starts within two seconds of offline rendering');
+      assert.deepEqual(rendered.switched, [true, true, true, true], 'Every offline switch reached the worklet');
+      const output = fromBase64(rendered.output).subarray(rendered.start);
+      const coarse = lag(frames(signal), frames(output), 10);
+      const at = (from, to) => exactLag(signal, output, Math.round(from * RATE), Math.round(to * RATE), coarse);
+      // Filtered voice before, between and after the bypasses; the bypassed stretches are raw noise.
+      const filterDelays = [[1, 2.5], [7.2, 10], [14.2, 15.8]].map((range) => at(...range));
+      const bypassDelays = [[4.2, 6], [11.2, 13]].map((range) => at(...range));
+      console.log(`MEASURED: rendered offline, filtered delay ${filterDelays.join(', ')} samples before, between and after the bypasses; bypassed delay ${bypassDelays.join(' and ')}`);
+      for (const delay of [...filterDelays, ...bypassDelays]) assert(Math.abs(delay - filterDelays[0]) <= 2, `Bypassed and filtered audio keep one delay, so switching neither skips nor repeats audio (${[...filterDelays, ...bypassDelays]})`);
+      // A slip that recovers, as one in the warmup after resuming would, shows only near its switch. Bypassed
+      // and warmup frames are the input to the bit, so every sample is checked: wherever a run of output copies
+      // the input, it must copy it at that delay and never a frame or two either side.
+      const delay = filterDelays[0];
+      const copied = (shift) => {
+        const runs = new Uint8Array(signal.length); let start = 0;
+        for (let i = 0; i <= signal.length; i++) {
+          if (i < signal.length && signal[i] !== 0 && output[i + shift] === signal[i]) continue;
+          if (i - start >= 32) runs.fill(1, start, i);
+          start = i + 1;
+        }
+        return runs;
+      };
+      const onTime = copied(delay);
+      const slipped = [-960, -480, 480, 960].flatMap((d) => { const runs = copied(delay + d); const at = runs.indexOf(1); return at < 0 ? [] : [`${d > 0 ? '+' : ''}${d} at ${(at / RATE).toFixed(3)} s`]; });
+      // Passthrough runs from just after each switch into bypass to the end of the warmup after it.
+      const coverage = [[3.52, 6.6], [10.52, 13.6]].map(([from, to]) => {
+        let total = 0; let hit = 0;
+        for (let i = Math.round(from * RATE); i < Math.round(to * RATE); i++) if (signal[i] !== 0) { total++; hit += onTime[i]; }
+        return hit / total;
+      });
+      console.log(`MEASURED: rendered offline, ${coverage.map((value) => `${(value * 100).toFixed(1)}%`).join(' and ')} of each bypass and its warmup copies the input at that delay; copies at other delays: ${slipped.join(', ') || 'none'}`);
+      assert.deepEqual(slipped, [], `Bypassed and warmup audio never copies the input a frame early or late, so switching neither skips nor repeats audio even briefly`);
+      for (const value of coverage) assert(value >= 0.99, `Bypassed and warmup audio copies the input at the filtered delay throughout (${(value * 100).toFixed(1)}%)`);
+      console.log(`PASS: ${label} worklet keeps one delay through every switch, so bypassing neither skips nor repeats audio`);
       }
 
       // Noise-only stretches are attenuated while voiced stretches keep their energy.
