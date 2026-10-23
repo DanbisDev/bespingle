@@ -38,7 +38,7 @@ const retryDelay = 30;
 
 function typingInto(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (
-    target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.getAttribute('role') === 'separator'
   );
 }
 

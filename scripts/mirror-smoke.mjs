@@ -47,13 +47,13 @@ try {
   await page.getByRole('button', { name: 'Camera background', exact: true }).click();
   assert(!await mirrored(page, '.background-preview video'), 'Camera background preview follows the setting');
   await done();
-  await page.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand', exact: true }).click();
   await page.locator('.expanded .gallery').waitFor();
   assert(!await mirrored(page, '.expanded .gallery [data-testid="video-self"] video'), 'Gallery self-view follows the setting');
   await page.getByRole('button', { name: 'Pin Mirror test (you) video', exact: true }).click();
   await page.locator('.expanded [data-testid="video-self"].is-selected').waitFor();
   assert(!await mirrored(page, '.expanded [data-testid="video-self"].is-selected video'), 'Expanded self-view follows the setting');
-  await page.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to game', exact: true }).click();
   console.log('Turning mirroring off un-flips every self-view at once');
 
   await enter();
