@@ -93,7 +93,10 @@ export function usePeerMedia(
   qualityChoice.current = quality;
   const [cameraOn, setCameraOn] = useState(false);
   const participants = self?.carpetId ? players.filter((player) => player.carpetId === self.carpetId).length : 1;
-  const ladder: LadderInput = { participants, quality, sharing: !!screenStream, background: background !== 'none' && cameraOn, noise: noiseLevel === 'strong' && filtering };
+  // Bypassing Strong leaves only the built-in suppression, so the noise rung
+  // counts only while that is known to be on. Without it, a bypass would send
+  // the microphone unsuppressed, and noise filtering never steps down to Off.
+  const ladder: LadderInput = { participants, quality, sharing: !!screenStream, background: background !== 'none' && cameraOn, noise: noiseLevel === 'strong' && filtering && standardSupported && noiseActive === true };
   // Further step-downs for device load, below what the count alone sets, and
   // the ladder they were counted on.
   const [load, setLoad] = useState<{ steps: number; ladder: LadderInput }>({ steps: 0, ladder });

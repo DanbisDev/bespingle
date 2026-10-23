@@ -121,9 +121,9 @@ const pages = [];
 // standing in for Firefox or Safari, and the encoders' quality-limitation
 // reason, which otherwise reports whatever this test machine is doing. The
 // encoder's target bitrate sits at the sender's cap unless a test lowers it.
-async function client(name, { pressure }) {
+async function client(name, { pressure, builtIn = true }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['camera', 'microphone'] });
-  await context.addInitScript((pressure) => {
+  await context.addInitScript(({ pressure, builtIn }) => {
     window.__pcs = [];
     window.__negotiations = 0;
     const Native = window.RTCPeerConnection;
@@ -170,6 +170,8 @@ async function client(name, { pressure }) {
       }
     };
     delete window.PressureObserver;
+    // A browser without built-in noise suppression, where Strong's filter works alone.
+    if (!builtIn) navigator.mediaDevices.getSupportedConstraints = () => ({});
     if (pressure) {
       const observers = new Set();
       window.__pressure = (state) => { for (const callback of observers) callback([{ source: 'cpu', state, time: performance.now() }]); };
@@ -190,7 +192,7 @@ async function client(name, { pressure }) {
       }, 66);
       return stream;
     };
-  }, pressure);
+  }, { pressure, builtIn });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(`${name}: ${error.message}`));
   page.on('console', (message) => { if (message.type() === 'warning' || message.type() === 'error') console.log(name, message.type(), message.text()); });
@@ -318,7 +320,7 @@ try {
   // screen, so her ladder holds every section: seven rungs below 720p30.
   const alice = await client('Alice', { pressure: true });
   await enter(alice, 648, 'Sky');
-  const bob = await client('Bob', { pressure: false });
+  const bob = await client('Bob', { pressure: false, builtIn: false });
   await enter(bob, 600);
   await alice.bringToFront();
   await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
@@ -386,6 +388,11 @@ try {
   await limit(bob, 'bandwidth', 150_000);
   const bobFurther = await expectCaps(bob, { camera: 15, screen: null }, 30_000);
   console.log(`Without PressureObserver, encoder reports step the camera down: CPU limit (${bobDown} ms), then a network bandwidth limit (${bobFurther} ms)`);
+  // Bob's browser has no built-in suppression, so bypassing Strong would leave
+  // his microphone unsuppressed. Sustained load goes no further than the camera.
+  await bob.waitForTimeout(5000 + 10_000 + 5000);
+  assert.deepEqual(await caps(bob), { camera: 15, screen: null, segment: null, bypassed: false }, 'Without built-in suppression, load never bypasses Strong');
+  console.log('Without built-in suppression, sustained load leaves Strong noise filtering running');
 
   // Recovery restores the screen share first, then the camera, one hold each.
   await pressure(alice, 'nominal');
