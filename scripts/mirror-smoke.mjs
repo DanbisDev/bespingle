@@ -83,6 +83,82 @@ try {
   assert(await toggle().isChecked(), 'The control stays available while the camera is off');
   await done();
   console.log('With the camera off the settings dialog has no preview');
+
+  // A camera that is red on the left and blue on the right shows which way
+  // round peers receive it. Blur keeps that split; a virtual background
+  // would replace a frame with no person in it, so blur is the case checked.
+  const senderContext = await browser.newContext({ permissions: ['camera', 'microphone'], viewport: { width: 1280, height: 800 } });
+  await senderContext.addInitScript(() => {
+    const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (options) => {
+      if (!options?.video) return capture(options);
+      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
+      const ctx = canvas.getContext('2d');
+      const draw = () => { ctx.fillStyle = '#e01010'; ctx.fillRect(0, 0, 320, 360); ctx.fillStyle = '#1010e0'; ctx.fillRect(320, 0, 320, 360); };
+      draw(); setInterval(draw, 100);
+      const stream = canvas.captureStream(10);
+      if (options.audio) for (const track of (await capture({ audio: options.audio })).getAudioTracks()) stream.addTrack(track);
+      return stream;
+    };
+  });
+  const sender = await senderContext.newPage();
+  sender.on('pageerror', (e) => console.error('PAGE ERROR', e));
+  await sender.goto(url);
+  await sender.getByLabel('Your display name').fill('Mirror sender');
+  await sender.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await sender.getByRole('button', { name: 'Turn camera on', exact: true }).click();
+  await sender.getByRole('button', { name: 'Turn camera off', exact: true }).waitFor({ timeout: 45000 });
+  await sender.locator('[data-testid="game-canvas"]').focus();
+  await sender.keyboard.down('w');
+  await sender.locator('.call-strip.has-conversation').waitFor();
+  await sender.keyboard.up('w');
+  const receiver = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
+  await receiver.goto(url);
+  await receiver.getByLabel('Your display name').fill('Mirror receiver');
+  await receiver.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await receiver.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+  await receiver.waitForFunction(() => Number(document.querySelector('[data-testid="game-canvas"]').dataset.x) > 0);
+  const game = receiver.locator('[data-testid="game-canvas"]');
+  await game.focus();
+  for (let i = 0; i < 2; i++) {
+    const x = Number(await game.getAttribute('data-x')) - 48;
+    await receiver.keyboard.down('a'); await receiver.waitForTimeout(35); await receiver.keyboard.up('a');
+    await receiver.waitForFunction((x) => Number(document.querySelector('[data-testid="game-canvas"]').dataset.x) === x && document.querySelector('[data-testid="game-canvas"]').dataset.moving !== 'true', x);
+  }
+  await receiver.keyboard.down('w');
+  await receiver.getByRole('dialog').waitFor(); await receiver.keyboard.up('w');
+  await receiver.getByRole('button', { name: 'Neither', exact: false }).click();
+  const peerSeesTrueImage = async (label) => {
+    await receiver.waitForFunction(() => {
+      const video = document.querySelector('[data-testid="video-peer"] video');
+      if (!video?.videoWidth) return false;
+      const canvas = document.createElement('canvas'); canvas.width = 20; canvas.height = 20;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(video, 0, 0, 20, 20);
+      const [lr, , lb] = ctx.getImageData(2, 10, 1, 1).data; const [rr, , rb] = ctx.getImageData(17, 10, 1, 1).data;
+      return lr > lb + 80 && rb > rr + 80;
+    }, null, { timeout: 30000 }).catch(() => assert.fail(`${label}: the peer receives the camera un-mirrored`));
+    assert(!await mirrored(receiver, '[data-testid="video-peer"] video'), `${label}: the peer's tile is not mirrored`);
+  };
+  const senderToggle = sender.getByRole('checkbox', { name: 'Mirror my video' });
+  const setSenderMirror = async (on) => {
+    await sender.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
+    await senderToggle.setChecked(on);
+    await sender.getByRole('button', { name: 'Done', exact: true }).click();
+    assert.equal(await mirrored(sender, '[data-testid="video-self"] video'), on, 'The sender sees the chosen self-view');
+  };
+  for (const background of ['none', 'blur']) {
+    if (background === 'blur') {
+      await sender.getByRole('button', { name: 'Camera background', exact: true }).click();
+      await sender.getByRole('button', { name: 'Blur', exact: true }).click();
+      await sender.locator('.background-blur[aria-pressed="true"]').waitFor({ timeout: 45000 });
+      await sender.getByRole('button', { name: 'Done', exact: true }).click();
+    }
+    for (const on of [true, false]) {
+      await setSenderMirror(on);
+      await peerSeesTrueImage(`Mirroring ${on ? 'on' : 'off'}, ${background === 'none' ? 'no background' : 'blur'}`);
+    }
+  }
+  console.log('Peers receive the true image with mirroring on and off, with and without blur');
   console.log('Self-view mirroring passed');
 } catch (error) {
   for (const [index, page] of browser.contexts().flatMap((context) => context.pages()).entries()) await page.screenshot({ path: `test-results/mirror-failure-${index}.png` }).catch(() => {});
