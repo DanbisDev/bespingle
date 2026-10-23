@@ -172,7 +172,10 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .join-note svg { height: 13px; width: 13px; }
 .join-note svg:last-of-type { margin-right: 3px; }
 .form-error, .inline-error { font-size: 11px; color: #ffd2c8; line-height: 1.6; background: #442a31; border: 1px solid #805257; border-radius: 7px; padding: 10px 12px; margin: 12px 0; }
-.inline-error { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 40px); margin: 0; z-index: 9; box-shadow: 0 6px 24px #0006; }
+.inline-error { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 40px); margin: 0; z-index: 9; box-shadow: 0 6px 24px #0006; display: flex; align-items: center; gap: 10px; padding-right: 6px; }
+.inline-error-close { flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.inline-error-close svg { width: 14px; height: 14px; }
+.inline-error-close:hover { background: #ffffff1a; }
 .device-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 24px; }
 .device-choices button { display: flex; flex-direction: column; align-items: flex-start; text-align: left; background: #253247; border: 1px solid #3c4e68; border-radius: 10px; padding: 17px 15px; }
 .device-choices button:hover:not(:disabled) { background: #304b51; border-color: #8fcebf; }

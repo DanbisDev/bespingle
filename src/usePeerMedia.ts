@@ -65,6 +65,7 @@ export function usePeerMedia(
   const screen = useRef<MediaStream | null>(null);
   const screenRequest = useRef(0);
   const [error, setError] = useState('');
+  const clearError = useCallback(() => setError(''), []);
   const [busy, setBusy] = useState(false);
   const [hasChosenDevices, setHasChosenDevices] = useState(false);
   const peers = useRef(new Map<string, Peer>());
@@ -679,5 +680,5 @@ export function usePeerMedia(
     } finally { if (isCurrent()) setBusy(false); }
   }, [publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, clearError, busy, hasChosenDevices };
 }
