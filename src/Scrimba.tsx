@@ -20,10 +20,10 @@ export function Scrimba({ game, selfId, send, close, error }: {
     return () => previous?.focus();
   }, []);
 
-  const add = (emoji: string) => setDraft((current) => current.length < rules.slots ? [...current, emoji] : current);
+  const add = (emoji: string) => setDraft((current) => current.length < rules.slots && !current.includes(emoji) && keyboardMarks.get(emoji) !== 'absent' ? [...current, emoji] : current);
   const erase = () => setDraft((current) => current.slice(0, -1));
   const submit = () => {
-    if (!game || !me || me.done || draft.length !== rules.slots) return;
+    if (!game || !me || me.done || draft.length !== rules.slots || draft.some((emoji) => keyboardMarks.get(emoji) === 'absent')) return;
     send({ type: 'scrimba-guess', id: game.id, turn: me.guesses.length, emojis: draft });
     setDraft([]);
   };
@@ -40,7 +40,7 @@ export function Scrimba({ game, selfId, send, close, error }: {
     if (event.key === 'Enter' && event.target === dialog.current) { event.preventDefault(); submit(); }
   }}>
     <div className="scrimba-heading"><div><span className="scrimba-eyebrow">A LITTLE EMOJI MYSTERY</span><h2>Scrimba <span aria-hidden="true">🌈</span></h2></div><button type="button" className="secondary-button" onClick={close} aria-label="Close Scrimba">Close</button></div>
-    <p className="dialog-description">Find the {rules.slots}-emoji sequence in {rules.attempts} guesses. Everyone gets the same puzzle. Emojis can repeat.</p>
+    <p className="dialog-description">Find the {rules.slots}-emoji sequence in {rules.attempts} guesses. Everyone gets the same puzzle. Each emoji appears only once.</p>
     <p className="scrimba-legend"><span>🟩 Right spot</span><span>🟨 Wrong spot</span><span>⬛ Not in puzzle</span></p>
     {!game || !me ? <p role="status">{error || 'Joining Scrimba…'}</p> : <>
       <nav className="scrimba-players" aria-label="Scrimba players">{game.players.map((player) => <button type="button" key={player.id} aria-pressed={viewed?.id === player.id} onClick={() => setViewId(player.id)}>{player.id === selfId ? 'Your board' : player.name}<small>{player.won ? 'Solved' : player.done ? 'Finished' : `${player.guesses.length}/${rules.attempts}`}</small></button>)}</nav>
@@ -53,15 +53,15 @@ export function Scrimba({ game, selfId, send, close, error }: {
             {Array.from({ length: rules.slots }, (_, col) => {
               const emoji = guess?.emojis?.[col] ?? (active ? draft[col] : undefined);
               const mark = guess?.marks[col];
-              return <span className={`scrimba-cell ${mark ?? ''} ${emoji ? 'filled' : ''}`} key={col} aria-label={`Position ${col + 1}: ${emoji ?? (mark ? 'hidden emoji' : 'empty')}${mark ? `, ${markLabels[mark]}` : ''}`}>{emoji ?? (mark ? '?' : '')}</span>;
+              return <span className={`scrimba-cell ${mark ?? ''} ${emoji ? 'filled' : ''}`} key={col} aria-label={`Position ${col + 1}: ${emoji ?? (mark ? 'hidden emoji' : 'empty')}${mark ? `, ${markLabels[mark]}` : ''}`}><span className="scrimba-symbol">{emoji ?? (mark ? '?' : '')}</span></span>;
             })}
           </div>;
         })}
       </div>
       <div role="status" className="scrimba-result">{me.done && <><strong>{me.won ? 'You solved it! 🎉' : 'That’s six. Another mystery awaits.'}</strong><p>Solution: {game.solution?.join(' ')}</p></>}{!ownBoard && viewed?.done && <p>{viewed.won ? 'Solved' : 'Finished'} in {viewed.guesses.length} guesses</p>}</div>
       {ownBoard && !me.done && <div className="scrimba-controls">
-        <div className="scrimba-keyboard" aria-label="Emoji keyboard">{rules.emojis.map((emoji, i) => <button type="button" key={emoji} className={keyboardMarks.get(emoji) ?? ''} disabled={draft.length === rules.slots} aria-label={`Add ${emojiNames[i]}${keyboardMarks.has(emoji) ? `, ${markLabels[keyboardMarks.get(emoji) as keyof typeof markLabels]}` : ''}`} onClick={() => add(emoji)}>{emoji}</button>)}</div>
-        <div className="scrimba-actions"><button type="button" className="secondary-button" disabled={!draft.length} onClick={erase}>⌫ Delete</button><button type="button" className="primary-button" disabled={draft.length !== rules.slots} onClick={submit}>Guess</button></div>
+        <div className="scrimba-keyboard" aria-label="Emoji keyboard">{rules.emojis.map((emoji, i) => <button type="button" key={emoji} className={keyboardMarks.get(emoji) ?? ''} disabled={draft.length === rules.slots || draft.includes(emoji) || keyboardMarks.get(emoji) === 'absent'} aria-label={`Add ${emojiNames[i]}${keyboardMarks.has(emoji) ? `, ${markLabels[keyboardMarks.get(emoji) as keyof typeof markLabels]}` : ''}`} onClick={() => add(emoji)}><span className="scrimba-symbol" aria-hidden="true">{emoji}</span></button>)}</div>
+        <div className="scrimba-actions"><button type="button" className="secondary-button" disabled={!draft.length} onClick={erase}>⌫ Delete</button><button type="button" className="primary-button" disabled={draft.length !== rules.slots || draft.some((emoji) => keyboardMarks.get(emoji) === 'absent')} onClick={submit}>Guess</button></div>
       </div>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </>}

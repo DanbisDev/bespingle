@@ -140,12 +140,15 @@ func (h *hub) startScrimbaLocked(c *client) error {
 		return errors.New("could not start Scrimba")
 	}
 	g := &scrimbaGame{Creator: c.player.ID, ID: hex.EncodeToString(id), CarpetID: c.player.CarpetID, Created: h.now(), Players: map[string]*scrimbaPlayer{}, Solution: make([]string, scrimbaRules.Slots)}
+	choices := append([]string(nil), scrimbaRules.Emojis...)
 	for i := range g.Solution {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(scrimbaRules.Emojis))))
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(choices))))
 		if err != nil {
 			return errors.New("could not create Scrimba puzzle")
 		}
-		g.Solution[i] = scrimbaRules.Emojis[n.Int64()]
+		index := int(n.Int64())
+		g.Solution[i] = choices[index]
+		choices = append(choices[:index], choices[index+1:]...)
 	}
 	g.Players[c.player.ID] = &scrimbaPlayer{ID: c.player.ID, Name: c.player.Name, Guesses: []scrimbaGuess{}}
 	h.scrimba[g.ID] = g
@@ -199,7 +202,23 @@ func (h *hub) handleScrimbaLocked(c *client, data []byte) error {
 		if len(msg.Emojis) != scrimbaRules.Slots {
 			return errors.New("choose five emojis for your guess")
 		}
+		absent := map[string]bool{}
+		for _, previous := range p.Guesses {
+			for i, mark := range previous.Marks {
+				if mark == "absent" {
+					absent[previous.Emojis[i]] = true
+				}
+			}
+		}
+		seen := map[string]bool{}
 		for _, emoji := range msg.Emojis {
+			if absent[emoji] {
+				return errors.New("this emoji is already confirmed not in the puzzle")
+			}
+			if seen[emoji] {
+				return errors.New("each emoji can only appear once in a guess")
+			}
+			seen[emoji] = true
 			valid := false
 			for _, choice := range scrimbaRules.Emojis {
 				if emoji == choice {

@@ -308,7 +308,8 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .scrimba-cell.filled { border-color: #8a9cb4; }
 .scrimba-cell.correct, .scrimba-keyboard .correct { background: #356f4d; border-color: #71b38a; }
 .scrimba-cell.present, .scrimba-keyboard .present { background: #8b6a20; border-color: #d4b25a; }
-.scrimba-cell.absent, .scrimba-keyboard .absent { background: #303946; border-color: #566070; }
+.scrimba-cell.absent, .scrimba-keyboard .absent { background: #080d14; border-color: #202936; }
+.scrimba-cell.absent .scrimba-symbol, .scrimba-keyboard .absent .scrimba-symbol { opacity: .45; filter: grayscale(1); }
 .scrimba-result { text-align: center; color: #bde0c9; font-size: 13px; line-height: 1.8; margin: 10px 0; }
 .scrimba-keyboard { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
 .scrimba-keyboard button { min-height: 43px; border: 1px solid #53647c; background: #2d3c52; border-radius: 7px; font-size: 24px; }

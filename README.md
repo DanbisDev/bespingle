@@ -61,9 +61,10 @@ To start them separately, run `npm run dev:backend` and
   browser storage. Recipients can still copy messages they receive.
 - Type **/scrimba** in carpet chat to start an emoji guessing game. Your board
   opens immediately and others on the carpet get a **Launch Scrimba** invitation.
-  Find the shared five-emoji sequence in six guesses; repeated emojis are allowed.
-  Green means the correct position, yellow means the emoji belongs elsewhere,
-  and gray means no remaining match. Each player solves independently. Click a
+  Find the shared five-emoji sequence in six guesses. Solutions and guesses use
+  unique emojis. Green means the correct position; yellow means it belongs
+  elsewhere. Dark tiles mark emojis absent from the puzzle and disable those
+  keys for later guesses. Each player solves independently. Click a
   player's name to inspect their board: only colors are shared until you finish
   your own puzzle, then the emojis and solution are revealed. Close and reopen
   from the invitation to continue. Scrimba uses WebSocket events and transient

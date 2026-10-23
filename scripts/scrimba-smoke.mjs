@@ -162,9 +162,9 @@ try {
   const panel = (page) => page.getByRole('dialog', { name: 'Scrimba', exact: true });
   const board = (page) => panel(page).locator('.scrimba-board');
   const latest = (page) => page.evaluate(() => window.__messages.filter((m) => m.type === 'scrimba-state').at(-1));
-  const guess = async (page, name) => {
+  const guess = async (page, names) => {
     const before = await panel(page).locator('.scrimba-cell.correct, .scrimba-cell.present, .scrimba-cell.absent').count();
-    for (let i = 0; i < 5; i++) await panel(page).getByRole('button', { name: new RegExp('^Add ' + name) }).click();
+    for (const name of names) await panel(page).getByRole('button', { name: new RegExp('^Add ' + name) }).click();
     await panel(page).getByRole('button', { name: 'Guess', exact: true }).click();
     await page.waitForFunction((before) => document.querySelectorAll('.scrimba-board .correct, .scrimba-board .present, .scrimba-board .absent').length > before, before);
   };
@@ -178,7 +178,12 @@ try {
   const aliceID = await alice.evaluate(() => window.__selfId);
   const bobID = await bob.evaluate(() => window.__selfId);
   assert.equal((await latest(alice)).id, (await latest(bob)).id, 'Players share one puzzle');
-  await guess(alice, 'Apple');
+  const apple = panel(alice).getByRole('button', { name: /^Add Apple/ });
+  await apple.click();
+  assert.equal(await apple.isDisabled(), true, 'Selected emojis cannot be reused in the same guess');
+  await panel(alice).getByRole('button', { name: /Delete/ }).click();
+  assert.equal(await apple.isEnabled(), true, 'Deleting an emoji makes it available again');
+  await guess(alice, ['Apple', 'Lemon', 'Grapes', 'Star', 'Fire']);
   await panel(bob).getByRole('button', { name: /Scrimba Alice/ }).click();
   await bob.waitForFunction(() => document.querySelectorAll('.scrimba-cell').length === 30 && document.querySelector('.scrimba-cell').textContent === '?');
   const hidden = await latest(bob);
@@ -193,16 +198,19 @@ try {
   assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y >= 0 && bounds.y + bounds.height <= 844, 'Mobile game fits screen');
   await panel(bob).getByRole('button', { name: /Your board/ }).click();
   await bob.screenshot({ path: `${output}/scrimba-mobile-keyboard.png`, fullPage: true });
-  // Try two different all-identical guesses, ensuring this board cannot win on both.
-  // Six guesses exercise completion and unlock other players' emoji identities.
+  // Six distinct-emoji guesses exercise completion and reveal other boards.
   for (let turn = 0; turn < 6; turn++) {
     const me = (await latest(bob)).players.find((p) => p.id === bobID);
     if (me.done) break;
-    await guess(bob, turn % 2 ? 'Fire' : 'Lemon');
+    const available = await panel(bob).locator('.scrimba-keyboard button:enabled').evaluateAll((buttons) => buttons.slice(0, 5).map((button) => button.getAttribute('aria-label').slice(4).split(',')[0]));
+    await guess(bob, available);
+    const keys = panel(bob).locator('.scrimba-keyboard button.absent');
+    for (let i = 0; i < await keys.count(); i++) assert.equal(await keys.nth(i).isDisabled(), true, 'Confirmed absent emojis cannot be selected');
   }
   await panel(bob).getByText(/Solution:/).waitFor();
   const completed = await latest(bob);
   assert.equal(completed.solution.length, 5);
+  assert.equal(new Set(completed.solution).size, 5, 'Solutions contain unique emojis');
   assert.equal(completed.players.find((p) => p.id === aliceID).guesses[0].emojis.length, 5);
   await panel(bob).getByRole('button', { name: /Scrimba Alice/ }).click();
   assert.equal(await board(bob).locator('.scrimba-cell').first().textContent(), '🍎');

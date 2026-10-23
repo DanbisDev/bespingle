@@ -73,8 +73,16 @@ func TestScrimbaFlow(t *testing.T) {
 	}
 	h.mu.Lock()
 	g := h.scrimba[id]
+	generatedSolution := append([]string(nil), g.Solution...)
 	g.Solution = []string{"🍎", "🍋", "🍇", "🍒", "🥝"}
 	h.mu.Unlock()
+	unique := map[string]bool{}
+	for _, emoji := range generatedSolution {
+		if unique[emoji] {
+			t.Fatal("generated solution repeats an emoji")
+		}
+		unique[emoji] = true
+	}
 	drain(alice)
 	drain(bob)
 	guess := func(c *client, emojis []string, turn int) error {
@@ -101,6 +109,12 @@ func TestScrimbaFlow(t *testing.T) {
 	}
 	if err := guess(alice, g.Solution, 0); err == nil {
 		t.Fatal("accepted replayed turn")
+	}
+	if err := guess(bob, []string{"🍎", "🍎", "🍇", "🍒", "🥝"}, 0); err == nil {
+		t.Fatal("accepted duplicate emojis")
+	}
+	if len(g.Players[bob.player.ID].Guesses) != 0 {
+		t.Fatal("invalid guess consumed a turn")
 	}
 	if err := guess(bob, []string{"🍎"}, 0); err == nil {
 		t.Fatal("accepted short guess")
@@ -130,8 +144,17 @@ func TestScrimbaFlow(t *testing.T) {
 	if len(lateStates) != 1 || len(lateStates[0].Players) != 3 {
 		t.Fatal("late join missing current state")
 	}
+	if err := guess(late, []string{"🔥", "⭐", "🌈", "💎", "🌻"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := guess(late, []string{"🔥", "🍎", "🍇", "🍒", "🥝"}, 1); err == nil {
+		t.Fatal("accepted confirmed absent emoji")
+	}
+	if len(g.Players[late.player.ID].Guesses) != 1 {
+		t.Fatal("rejected absent emoji consumed a turn")
+	}
 	for i := 0; i < 6; i++ {
-		if err := guess(bob, []string{"🔥", "🔥", "🔥", "🔥", "🔥"}, i); err != nil {
+		if err := guess(bob, []string{"🍋", "🍎", "🍇", "🍒", "🥝"}, i); err != nil {
 			t.Fatal(err)
 		}
 	}
