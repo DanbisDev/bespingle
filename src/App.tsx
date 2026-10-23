@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
@@ -160,15 +160,18 @@ export default function App() {
 
   // A device error shown in a dialog was already seen there, so it must not
   // follow the person into the banner once that dialog goes away by any route.
+  // The render that removes the dialog keeps it out of the alert banner too, so
+  // it is never painted or announced before it is cleared.
   const deviceDialogs = useRef({ settingsOpen, backgroundOpen, isMediaPrompt });
+  const previousDialogs = deviceDialogs.current;
+  const deviceDialogClosed = (previousDialogs.settingsOpen && !settingsOpen) || (previousDialogs.backgroundOpen && !backgroundOpen) || (previousDialogs.isMediaPrompt && !isMediaPrompt);
   const { clearError: clearMediaError } = media;
-  useEffect(() => {
-    const previous = deviceDialogs.current;
+  useLayoutEffect(() => {
     deviceDialogs.current = { settingsOpen, backgroundOpen, isMediaPrompt };
-    if ((previous.settingsOpen && !settingsOpen) || (previous.backgroundOpen && !backgroundOpen) || (previous.isMediaPrompt && !isMediaPrompt)) clearMediaError();
-  }, [settingsOpen, backgroundOpen, isMediaPrompt, clearMediaError]);
+    if (deviceDialogClosed) clearMediaError();
+  }, [settingsOpen, backgroundOpen, isMediaPrompt, deviceDialogClosed, clearMediaError]);
 
-  const bannerError = connected ? game.serverError || (!isMediaPrompt && !editingBackground && !editingMicrophone ? media.error : '') : '';
+  const bannerError = connected ? game.serverError || (!isMediaPrompt && !editingBackground && !editingMicrophone && !deviceDialogClosed ? media.error : '') : '';
   const dismissBanner = () => { if (game.serverError) game.clearServerError(); else clearMediaError(); };
 
   return <div className="app-shell">
