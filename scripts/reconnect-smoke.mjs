@@ -298,6 +298,35 @@ try {
   console.log('Entering from the form starts with devices off and asks on the carpet');
   await devicesOffice.close();
 
+  // A rejoin the server refuses lands on the join form with its reason, out of the office.
+  // A remembered name the server rejects stands in for a full office, which the real map
+  // is too large to fill.
+  const refusedOffice = await context();
+  const refused = await open(refusedOffice);
+  await refused.getByLabel('Your display name').fill('Uma');
+  await refused.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await inOffice(refused);
+  await refused.evaluate(() => {
+    const part = document.cookie.split('; ').find((item) => item.startsWith('bespingle_profile='));
+    const profile = JSON.parse(decodeURIComponent(part.split('=').slice(1).join('=')));
+    document.cookie = `bespingle_profile=${encodeURIComponent(JSON.stringify({ ...profile, name: 'U\u0007ma' }))}; Path=/`;
+  });
+  await stopServer();
+  await banner(refused).waitFor();
+  await startServer(buildA);
+  await joinForm(refused);
+  await refused.getByRole('alert').filter({ hasText: 'display name cannot contain control characters' }).waitFor();
+  assert.equal(await banner(refused).count(), 0, 'A refused rejoin leaves the reconnecting state');
+  const afterRefusal = (await sockets(refused)).length;
+  await refused.waitForTimeout(3000);
+  assert.equal((await sockets(refused)).length, afterRefusal, 'A refused rejoin stops the retries');
+  await refused.reload();
+  await joinForm(refused);
+  await refused.waitForTimeout(500);
+  assert.deepEqual(await sockets(refused), [], 'A refused rejoin marks the person out of the office');
+  console.log('A refused rejoin lands on the join form with the server\'s reason');
+  await refusedOffice.close();
+
   const privateMode = await context({ refuseStorage: true });
   const guarded = await open(privateMode);
   await guarded.getByLabel('Your display name').fill('Sol');
