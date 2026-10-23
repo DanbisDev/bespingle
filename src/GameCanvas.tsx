@@ -507,7 +507,9 @@ export function GameCanvas({ players, selfId, onMove, onCancelMove, onDance, ser
           ctx.fillStyle = '#d3e5a9';
           ctx.fillRect(Math.round(position.x - 8), Math.round(position.y + 2), 16, 2);
         }
-        drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? Math.floor(now / 120) % 2 + 1 : 0, 1, dancing ? Math.floor(Math.max(0, time - player.dance!.startedAt) / 160) % 4 + 1 : 0, player.customAvatar);
+        // Walking follows this viewer's clock; dancing follows the server's start time.
+        const column = drawAvatar(ctx, position.x, position.y, player.avatar, seated && seat ? seat.facing : position.facing, seated, walking ? now : undefined, 1, dancing ? Math.max(0, time - player.dance!.startedAt) : undefined, player.customAvatar);
+        if (isSelf) canvas.dataset.avatarColumn = String(column);
         ctx.restore();
         ctx.save();
         if (portaling) ctx.globalAlpha = progress < .5 ? Math.max(0, 1 - progress / .3) : Math.max(0, (progress - .75) / .25);
