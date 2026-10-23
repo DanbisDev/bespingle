@@ -29,7 +29,7 @@ try {
     await page.keyboard.up('w');
     await page.locator('[data-testid="video-self"].has-video').waitFor();
   };
-  const settings = () => page.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
+  const settings = () => page.getByRole('button', { name: 'Video settings', exact: true }).click();
   const toggle = () => page.getByRole('checkbox', { name: 'Mirror my video' });
   const done = () => page.getByRole('button', { name: 'Done', exact: true }).click();
   const strip = '[data-testid="video-self"] video';
@@ -141,7 +141,7 @@ try {
   };
   const senderToggle = sender.getByRole('checkbox', { name: 'Mirror my video' });
   const setSenderMirror = async (on) => {
-    await sender.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
+    await sender.getByRole('button', { name: 'Video settings', exact: true }).click();
     await senderToggle.setChecked(on);
     await sender.getByRole('button', { name: 'Done', exact: true }).click();
     assert.equal(await mirrored(sender, '[data-testid="video-self"] video'), on, 'The sender sees the chosen self-view');

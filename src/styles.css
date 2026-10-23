@@ -121,13 +121,25 @@ h1, h2, p { margin: 0; }
 .location-info strong { display: block; font-size: 11px; font-weight: 600; }
 .location-info div > span { display: block; font-size: 10px; color: #a2aec0; margin-top: 4px; }
 .media-controls { display: flex; align-items: center; gap: 7px; }
-.noise-setting { display: flex; align-items: center; gap: 10px; margin: 20px 0; font-size: 14px; }
-.noise-setting input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }
+.noise-levels { border: 0; padding: 0; margin: 20px 0; min-width: 0; display: grid; gap: 8px; }
+.noise-levels legend { color: #c0cbdc; font-size: 12px; margin-bottom: 10px; }
+.noise-level { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid #3a4a60; border-radius: 9px; background: #192434; font-size: 14px; cursor: pointer; }
+.noise-level:has(input:checked) { border-color: #83d9c5; box-shadow: 0 0 0 1px #83d9c5; }
+.noise-level:has(input:disabled) { opacity: 0.6; cursor: default; }
+.noise-level input { width: 18px; height: 18px; padding: 0; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
+.noise-level span { display: grid; gap: 3px; }
+.noise-level small { color: #afbbcd; font-size: 11px; line-height: 1.4; }
 .device-button { border: 1px solid #334056; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: 8px; height: 36px; padding: 0 12px; background: #1b2535; color: #c0cbdc; font-size: 11px; }
 .device-button:hover:not(:disabled) { background: #29374b; border-color: #506580; }
 .device-button svg { height: 16px; width: 16px; }
 .device-button.enabled { color: #a7eee0; background: #183b3c; border-color: #376c68; }
 .device-button.enabled:hover { background: #23504f; }
+/* The microphone toggle and its settings opener read as one split control. */
+.device-group { display: flex; }
+.device-group > .device-button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.device-group .device-more { width: 26px; padding: 0; border-left-color: #2a3546; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.device-group.enabled .device-more { border-left-color: #2b5653; }
+.device-group > .device-button:hover:not(:disabled), .device-group > .device-button:focus-visible { position: relative; z-index: 1; }
 .hud-divider { height: 25px; width: 1px; background: #303c50; margin: 0 5px; }
 .leave-button { width: 36px; height: 36px; border: 1px solid #614044; background: #36232d; color: #f0b6ae; display: grid; place-items: center; border-radius: 8px; }
 .leave-button:hover:not(:disabled) { border-color: #a8686a; background: #54313c; }

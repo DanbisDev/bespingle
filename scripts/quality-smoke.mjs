@@ -147,7 +147,7 @@ function outbound(page) {
 const sum = (rows, kind, field) => rows.filter((row) => row.kind === kind).reduce((total, row) => total + (row[field] ?? 0), 0);
 async function chooseQuality(page, label) {
   await page.bringToFront();
-  await page.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Video settings', exact: true }).click();
   await page.getByRole('radio', { name: label, exact: true }).check();
   await page.getByRole('button', { name: 'Done', exact: false }).click();
 }
@@ -158,9 +158,30 @@ try {
   const lanes = [648, 600, 552, 504, 456];
   // Clients join one at a time so nobody spawns in another's lane.
   const alice = await client('Alice');
-  await alice.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
+  // The camera button carries its settings on a ⋯, reached by click and by keyboard.
+  const videoDialog = alice.getByRole('dialog', { name: 'Video settings', exact: true });
+  assert.equal(await alice.getByRole('group', { name: 'Camera', exact: true }).getByRole('button', { name: 'Video settings', exact: true }).count(), 1, 'The ⋯ sits in the camera group');
+  await alice.getByRole('button', { name: 'Video settings', exact: true }).click();
+  await videoDialog.waitFor();
   assert(await alice.getByRole('radio', { name: 'Auto', exact: true }).isChecked(), 'Video quality defaults to Auto');
+  assert.deepEqual(await videoDialog.getByRole('radio').evaluateAll((inputs) => inputs.map((input) => input.getAttribute('aria-label'))), ['Auto', 'High', 'Low', 'Audio only'], 'Video settings holds the four video qualities');
+  assert.equal(await videoDialog.locator('.noise-levels').count(), 0, 'Video settings holds no noise levels');
+  await videoDialog.screenshot({ path: 'test-results/video-settings.png' });
   await alice.getByRole('button', { name: 'Done', exact: false }).click();
+  await alice.getByRole('dialog').waitFor({ state: 'hidden' });
+  await alice.getByRole('button', { name: 'Turn camera on', exact: true }).focus();
+  await alice.keyboard.press('Tab');
+  assert.equal(await alice.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Video settings', 'The ⋯ follows the camera button in keyboard order');
+  await alice.keyboard.press('Enter');
+  await videoDialog.waitFor();
+  await alice.getByRole('button', { name: 'Done', exact: false }).click();
+  await alice.getByRole('dialog').waitFor({ state: 'hidden' });
+  await alice.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  await alice.getByRole('dialog', { name: 'Microphone settings', exact: true }).waitFor();
+  assert.equal(await alice.getByRole('radio', { name: 'Auto', exact: true }).count(), 0, 'Microphone settings holds no video quality');
+  await alice.getByRole('dialog').screenshot({ path: 'test-results/microphone-settings.png' });
+  await alice.getByRole('button', { name: 'Done', exact: false }).click();
+  await alice.locator('.media-controls').screenshot({ path: 'test-results/control-bar-camera-off.png' });
   await enter(alice, lanes[0]);
   // Free Alice's lane for a sixth arrival.
   await go(alice, lanes[0], 312);
@@ -246,12 +267,29 @@ try {
   await carol.reload();
   await carol.getByLabel('Your display name').fill('Carol');
   await carol.getByRole('button', { name: 'Enter the office', exact: true }).click();
-  await carol.getByRole('button', { name: 'Audio and video settings', exact: true }).click();
+  await carol.getByRole('button', { name: 'Video settings', exact: true }).click();
   assert(await carol.getByRole('radio', { name: 'Low', exact: true }).isChecked(), 'Video quality survives a reload');
   console.log('The video quality choice survives a reload');
+  await carol.getByRole('button', { name: 'Done', exact: false }).click();
+  await carol.getByRole('dialog').waitFor({ state: 'hidden' });
+
+  // The camera button itself only toggles the camera.
+  await carol.getByRole('button', { name: 'Turn camera on', exact: true }).click();
+  await carol.getByRole('button', { name: 'Turn camera off', exact: true }).waitFor();
+  assert.equal(await carol.getByRole('dialog').count(), 0, 'The camera button toggles the camera without opening settings');
+  assert.equal(await carol.getByRole('button', { name: 'Turn camera off', exact: true }).getAttribute('aria-pressed'), 'true');
+  await carol.waitForFunction(() => !document.querySelector('[aria-label="Video settings"]').disabled);
+  await carol.locator('.media-controls').screenshot({ path: 'test-results/control-bar-camera-on.png' });
+  await carol.setViewportSize({ width: 375, height: 700 });
+  await carol.locator('.game-hud').screenshot({ path: 'test-results/control-bar-phone.png' });
+  assert(await carol.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'The bar fits at phone width');
+  await carol.getByRole('button', { name: 'Turn camera off', exact: true }).click();
+  await carol.getByRole('button', { name: 'Turn camera on', exact: true }).waitFor();
+  assert.equal(await carol.getByRole('dialog').count(), 0, 'Turning the camera off opens no settings');
+  console.log('The camera ⋯ opens Video settings by click and keyboard; the camera button only toggles');
 
   assert.deepEqual(errors, [], 'No uncaught browser errors');
-  console.log('PASS: count-driven camera steps, manual High/Low/Audio only, no renegotiation, and persistence');
+  console.log('PASS: Video settings from the camera ⋯ by click and keyboard, count-driven camera steps, manual High/Low/Audio only, no renegotiation, and persistence');
 } catch (error) {
   for (const [index, page] of pages.entries()) {
     await page.screenshot({ path: `test-results/quality-failure-${index}.png` }).catch(() => {});
