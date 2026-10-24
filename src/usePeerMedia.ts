@@ -424,6 +424,7 @@ export function usePeerMedia(
     const controller = new AbortController(); filterStarting.current = controller;
     let active: ActiveFilter | null = null;
     try {
+      // It starts at its ceiling, and as in the ladder the noise rung counts only where bypassing leaves built-in suppression on.
       const started = await createNoiseFilter(source, (message) => {
         if (!active || filter.current !== active) return;
         filter.current = null;
@@ -433,11 +434,11 @@ export function usePeerMedia(
         if (source.readyState !== 'live') return;
         levelChoice.current = 'standard'; setNoiseLevel('standard');
         setError(strongStopped(message));
-      }, controller.signal, { bypassed: ceilingWith({ noise: true }).noise === 'standard' });
+      }, controller.signal, { bypassed: ceilingWith({ noise: standardSupported && source.getSettings().noiseSuppression === true }).noise === 'standard' });
       active = { ...started, source };
       return active;
     } finally { if (filterStarting.current === controller) filterStarting.current = null; }
-  }, [ceilingWith, publishCapture, strongStopped, syncSenders]);
+  }, [ceilingWith, publishCapture, standardSupported, strongStopped, syncSenders]);
 
   const [whiteboardActive, setWhiteboardActive] = useState(false);
   const whiteboardRef = useRef(false);

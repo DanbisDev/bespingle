@@ -155,12 +155,14 @@ async function client(name, { pressure, builtIn = true }) {
       }
     };
     window.__bypassed = null;
+    window.__startedBypassed = [];
     const NativeNode = window.AudioWorkletNode;
     window.AudioWorkletNode = class extends NativeNode {
       constructor(context, name, options) {
         super(context, name, options);
         if (name !== 'rnnoise') return;
         window.__bypassed = !!options?.processorOptions?.bypassed;
+        window.__startedBypassed.push(window.__bypassed);
         const port = this.port;
         const post = port.postMessage.bind(port);
         port.postMessage = (message, ...rest) => {
@@ -393,6 +395,27 @@ try {
   await bob.waitForTimeout(5000 + 10_000 + 5000);
   assert.deepEqual(await caps(bob), { camera: 15, screen: null, segment: null, bypassed: false }, 'Without built-in suppression, load never bypasses Strong');
   console.log('Without built-in suppression, sustained load leaves Strong noise filtering running');
+  // Nor does a filter started under that load begin bypassed, even for a moment. With a section
+  // below noise stepped down too, a noise section that counted would join at its lowest rung, so
+  // Bob shares his screen and lets the load reach it first.
+  await bob.getByRole('button', { name: 'Share screen', exact: true }).click();
+  await expectCaps(bob, { camera: 15, screen: 5 }, 45_000);
+  const startedBefore = await bob.evaluate(() => window.__startedBypassed.length);
+  await bob.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  // Each change settles, with the levels enabled again, before the next.
+  const settled = (level) => bob.waitForFunction((value) => !document.querySelector('.noise-levels')?.disabled && document.querySelector('.noise-levels input:checked')?.value === value, level);
+  await bob.getByRole('radio', { name: 'Off', exact: true }).click();
+  await settled('off');
+  await bob.getByRole('radio', { name: 'Strong', exact: true }).click();
+  await settled('strong');
+  await bob.waitForFunction((count) => window.__startedBypassed.length > count, startedBefore);
+  await bob.getByRole('button', { name: 'Done', exact: false }).click();
+  const started = await bob.evaluate(() => window.__startedBypassed);
+  assert.deepEqual(started, started.map(() => false), `Without built-in suppression, Strong started under load starts unbypassed: ${JSON.stringify(started)}`);
+  assert.deepEqual(await caps(bob), { camera: 15, screen: 5, segment: null, bypassed: false }, 'Strong restarted under load stays unbypassed');
+  await bob.getByRole('button', { name: 'Stop sharing screen', exact: true }).click();
+  await expectCaps(bob, { camera: 15, screen: null }, 10_000);
+  console.log('Without built-in suppression, Strong started under load starts unbypassed, even with the screen share stepped down');
 
   // Recovery restores the screen share first, then the camera, one hold each.
   await pressure(alice, 'nominal');
