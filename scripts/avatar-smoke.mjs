@@ -60,6 +60,8 @@ try {
   await page.getByRole('button', { name: 'Edit profile', exact: true }).click();
   await page.getByRole('textbox', { name: 'Display name', exact: true }).fill('Saved Designer');
   await page.getByRole('button', { name: 'Save profile' }).click();
+  // Leaving first, so the reload shows the join form rather than rejoining.
+  await page.getByRole('button', { name: 'Leave office', exact: true }).click();
   await page.reload();
   await page.getByRole('textbox', { name: 'Your display name' }).waitFor();
   assert.equal(await page.getByRole('textbox', { name: 'Your display name' }).inputValue(), 'Saved Designer');

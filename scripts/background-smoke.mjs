@@ -102,5 +102,89 @@ try {
   await page.getByRole('button', { name: 'Leave office', exact: true }).click();
   await page.getByRole('button', { name: 'Enter the office', exact: true }).waitFor();
   assert(await page.evaluate(() => window.__captures.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))), 'Leaving releases capture');
-  console.log('Camera backgrounds passed: real MediaPipe inference, presets, custom images, live switching, camera reuse, processed peer video, startup/runtime failures, and cleanup.');
+
+  // The choice, and a custom image, are remembered in this browser and applied to the next camera.
+  const url = process.env.BESPINGLE_URL || 'http://127.0.0.1:5555';
+  const revisit = async () => {
+    await page.goto(url);
+    await page.getByLabel('Your display name').fill('Background test');
+    await page.getByRole('button', { name: 'Enter the office', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+    // Entering again returns to the last tile; on a carpet that asks at once.
+    if (await page.locator('.call-strip.has-conversation').count()) {
+      await page.getByRole('button', { name: 'Neither', exact: false }).click();
+      await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    }
+    await page.getByRole('button', { name: 'Camera background', exact: true }).click();
+  };
+  const pressed = (name) => name === 'custom' ? page.locator('.background-upload[aria-pressed="true"]') : page.getByRole('button', { name, exact: true }).and(page.locator('[aria-pressed="true"]'));
+  const cornerPixel = (test) => page.waitForFunction((test) => {
+    const video = document.querySelector('.background-preview video');
+    if (!video?.videoWidth) return false;
+    const canvas = document.createElement('canvas'); canvas.width = 20; canvas.height = 20;
+    const ctx = canvas.getContext('2d'); ctx.drawImage(video, 0, 0, 20, 20);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data; return new Function('r', 'g', 'b', `return ${test}`)(r, g, b);
+  }, test, { timeout: 45000 });
+  const cameraOn = async () => {
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.getByRole('button', { name: 'Turn camera on', exact: true }).click();
+    await page.getByRole('button', { name: 'Turn camera off', exact: true }).waitFor({ timeout: 45000 });
+    await page.getByRole('button', { name: 'Camera background', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.background-preview video')?.srcObject?.getVideoTracks()[0]?.readyState === 'live');
+    assert(await page.evaluate(() => document.querySelector('.background-preview video').srcObject.getVideoTracks()[0].id !== window.__captures.at(-1).getVideoTracks()[0].id), 'The remembered background processes the new camera');
+  };
+  const leave = async () => {
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.getByRole('button', { name: 'Leave office', exact: true }).click();
+    await page.getByRole('button', { name: 'Enter the office', exact: true }).waitFor();
+  };
+  // The last choice made was the red custom image.
+  await revisit();
+  await pressed('custom').waitFor();
+  await cameraOn();
+  await cornerPixel('r > 230 && g < 25 && b < 25');
+  await page.getByRole('button', { name: 'Blur', exact: true }).click();
+  await pressed('Blur').waitFor({ timeout: 45000 });
+  await leave();
+  await revisit();
+  await pressed('Blur').waitFor();
+  await cameraOn();
+  await page.getByRole('button', { name: 'Sky', exact: true }).click();
+  await pressed('Sky').waitFor({ timeout: 45000 });
+  await leave();
+  await revisit();
+  await pressed('Sky').waitFor();
+  await cameraOn();
+  await cornerPixel('b > r');
+  console.log('Blur, a built-in scene and a custom image survive a reload and apply to a newly enabled camera.');
+  // A remembered custom background whose image is gone or unreadable becomes Blur, never None.
+  await page.getByLabel('Background image', { exact: true }).setInputFiles({ name: 'custom.png', mimeType: 'image/png', buffer: await page.evaluate(async () => { const canvas = document.createElement('canvas'); canvas.width = 20; canvas.height = 20; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 20, 20); return [...new Uint8Array(await (await new Promise((resolve) => canvas.toBlob(resolve))).arrayBuffer())]; }).then((bytes) => Buffer.from(bytes)) });
+  await pressed('custom').waitFor({ timeout: 45000 });
+  await leave();
+  await page.evaluate(() => new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase('bespingle'); request.onsuccess = resolve; request.onerror = reject; request.onblocked = reject; }));
+  await revisit();
+  await pressed('Blur').waitFor();
+  await cameraOn();
+  await leave();
+  await page.evaluate(() => { localStorage.setItem('bespingle_camera_background', 'custom'); });
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('bespingle', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('backgrounds');
+    open.onsuccess = () => { const tx = open.result.transaction('backgrounds', 'readwrite'); tx.objectStore('backgrounds').put('not an image', 'custom'); tx.oncomplete = () => { open.result.close(); resolve(); }; tx.onerror = reject; };
+    open.onerror = reject;
+  }));
+  await revisit();
+  await pressed('Blur').waitFor();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  // Without IndexedDB at all, the same.
+  const bare = await context.newPage();
+  await bare.addInitScript(() => { delete window.indexedDB; });
+  await bare.goto(url);
+  await bare.getByLabel('Your display name').fill('No IndexedDB');
+  await bare.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await bare.getByRole('button', { name: 'Camera background', exact: true }).click();
+  await bare.getByRole('button', { name: 'Blur', exact: true }).and(bare.locator('[aria-pressed="true"]')).waitFor();
+  await bare.close();
+  console.log('A remembered custom background with its image missing, unreadable, or without IndexedDB falls back to Blur.');
+  console.log('Camera backgrounds passed: real MediaPipe inference, presets, custom images, live switching, camera reuse, processed peer video, startup/runtime failures, cleanup, and remembered choices.');
 } finally { await browser.close(); }

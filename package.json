@@ -10,6 +10,7 @@
     "build": "tsc -b && vite build",
     "test:backend": "go test -race ./server",
     "test:browser": "node scripts/browser-smoke.mjs",
+    "test:reconnect": "node scripts/reconnect-smoke.mjs",
     "test:grid": "node scripts/grid-smoke.mjs",
     "test:chat": "node scripts/chat-smoke.mjs",
     "test:reactions": "node scripts/reactions-smoke.mjs",
