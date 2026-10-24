@@ -17,10 +17,16 @@ try {
   });
   const page = await context.newPage();
   page.on('pageerror', (e) => console.error('PAGE ERROR', e));
-  const enter = async () => {
+  const enter = async (again = false) => {
     await page.goto(url);
     await page.getByLabel('Your display name').fill('Mirror test');
     await page.getByRole('button', { name: 'Enter the office', exact: true }).click();
+    if (again) {
+      // Entering again returns to the last tile, on the carpet, which asks at once.
+      await page.getByRole('button', { name: 'Video only', exact: false }).click();
+      await page.locator('[data-testid="video-self"].has-video').waitFor({ timeout: 45000 });
+      return;
+    }
     await page.getByRole('button', { name: 'Turn camera on', exact: true }).click();
     await page.getByRole('button', { name: 'Turn camera off', exact: true }).waitFor({ timeout: 45000 });
     await page.locator('[data-testid="game-canvas"]').focus();
@@ -47,16 +53,18 @@ try {
   await page.getByRole('button', { name: 'Camera background', exact: true }).click();
   assert(!await mirrored(page, '.background-preview video'), 'Camera background preview follows the setting');
   await done();
-  await page.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand', exact: true }).click();
   await page.locator('.expanded .gallery').waitFor();
   assert(!await mirrored(page, '.expanded .gallery [data-testid="video-self"] video'), 'Gallery self-view follows the setting');
   await page.getByRole('button', { name: 'Pin Mirror test (you) video', exact: true }).click();
   await page.locator('.expanded [data-testid="video-self"].is-selected').waitFor();
   assert(!await mirrored(page, '.expanded [data-testid="video-self"].is-selected video'), 'Expanded self-view follows the setting');
-  await page.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to game', exact: true }).click();
   console.log('Turning mirroring off un-flips every self-view at once');
 
-  await enter();
+  // Leaving first, so the reload shows the join form rather than rejoining.
+  await page.getByRole('button', { name: 'Leave office', exact: true }).click();
+  await enter(true);
   assert(!await mirrored(page, strip), 'The off choice survives a reload');
   await settings();
   assert(!await toggle().isChecked(), 'The control shows the remembered choice after a reload');

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
 import { world } from './world';
@@ -14,9 +14,11 @@ import { useSpeaking } from './useSpeaking';
 import type { CameraBackground } from './cameraBackground';
 import { videoQualities } from './videoQuality';
 import { readMirrorSelfView, saveMirrorSelfView } from './selfView';
+import { clampSplitWidth, readSplitWidth, saveSplitWidth, splitWidthMax, splitWidthMin } from './splitView';
 import { Whiteboard } from './Whiteboard';
 
-type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'close' | 'arrow' | 'people' | 'exit' | 'check' | 'more';
+type IconName = 'screen' | 'mic' | 'camera' | 'expand' | 'split' | 'close' | 'arrow' | 'people' | 'exit' | 'check' | 'more';
+type Layout = 'strip' | 'split' | 'full';
 const reactions = [
   { emoji: '👋', label: 'Wave' }, { emoji: '👍', label: 'Thumbs up' },
   { emoji: '❤️', label: 'Love' }, { emoji: '😂', label: 'Laugh' },
@@ -28,6 +30,7 @@ function Icon({ name, off = false }: { name: IconName; off?: boolean }) {
     mic: <><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>,
     camera: <><rect x="3" y="6" width="12" height="12" rx="3" /><path d="m15 10 6-4v12l-6-4" /></>,
     expand: <path d="M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6" />,
+    split: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M10 4v16" /></>,
     close: <path d="m6 6 12 12M6 18 18 6" />,
     arrow: <path d="M4 12h15m-6-6 6 6-6 6" />,
     people: <><circle cx="9" cy="8" r="3" /><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5" /></>,
@@ -139,7 +142,7 @@ export default function App() {
   const game = useGame();
   const self = game.players.find((player) => player.id === game.selfId);
   const carpet = world.carpets.find((item) => item.id === self?.carpetId);
-  const media = usePeerMedia(self, game.players, game.send, game.signalHandler);
+  const media = usePeerMedia(self, game.players, game.send, game.signalHandler, game.rejoined);
   const [saved] = useState(readProfile);
   const [name, setName] = useState(saved.name);
   const [avatar, setAvatar] = useState(saved.avatar);
@@ -155,29 +158,49 @@ export default function App() {
   const chooseMirrorSelfView = (mirror: boolean) => { setMirrorSelfView(mirror); saveMirrorSelfView(mirror); };
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [promptCarpet, setPromptCarpet] = useState('');
-  const [expanded, setExpanded] = useState(false);
+  const [layout, setLayout] = useState<Layout>('strip');
+  const [fullFrom, setFullFrom] = useState<Exclude<Layout, 'full'>>('strip');
   const [selectedTile, setSelectedTile] = useState('');
+  const [splitWidth, setSplitWidth] = useState(readSplitWidth);
+  const stage = useRef<HTMLDivElement>(null);
   const previousCarpet = useRef('');
   const connected = game.status === 'connected';
+  const reconnecting = game.status === 'reconnecting';
   const members = self?.carpetId ? game.players.filter((player) => player.carpetId === self.carpetId).sort((a, b) => a.id === self.id ? -1 : b.id === self.id ? 1 : a.name.localeCompare(b.name)) : [];
 
   const screenMembers = members.filter((player) => player.id === self?.id ? !!media.screenStream : player.screen);
   const tileIds = [...screenMembers.map((player) => `screen-${player.id}`), ...members.map((player) => player.id)];
-  const activeTile = expanded && tileIds.includes(selectedTile) ? selectedTile : undefined;
-  const selectTile = (id: string) => { setSelectedTile(expanded && activeTile === id ? '' : id); setExpanded(true); };
+  const activeTile = layout !== 'strip' && tileIds.includes(selectedTile) ? selectedTile : undefined;
+  const changeLayout = (next: Layout) => {
+    if (next === 'strip' || layout === 'strip') setSelectedTile('');
+    if (next === 'full') setFullFrom(layout === 'split' ? 'split' : 'strip');
+    setLayout(next);
+  };
+  const selectTile = (id: string) => { if (layout === 'strip') { changeLayout('full'); setSelectedTile(id); } else setSelectedTile(activeTile === id ? '' : id); };
+  const chooseSplitWidth = (width: number) => { const next = clampSplitWidth(Math.round(width)); setSplitWidth(next); saveSplitWidth(next); };
+  const dragDivider = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const bounds = stage.current?.getBoundingClientRect();
+    if (bounds && event.currentTarget.hasPointerCapture(event.pointerId)) chooseSplitWidth((event.clientX - bounds.left) / bounds.width * 100);
+  };
+  const nudgeDivider = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === 'ArrowLeft' ? -5 : event.key === 'ArrowRight' ? 5 : 0;
+    if (!step) return;
+    event.preventDefault();
+    chooseSplitWidth(splitWidth + step);
+  };
 
   useEffect(() => {
-    if (!expanded) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') { setExpanded(false); setSelectedTile(''); } };
+    if (layout !== 'full') return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') { setLayout(fullFrom); if (fullFrom === 'strip') setSelectedTile(''); } };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
-  }, [expanded]);
+  }, [layout, fullFrom]);
 
   useEffect(() => {
     const id = self?.carpetId ?? '';
     if (previousCarpet.current !== id) {
       previousCarpet.current = id;
-      setExpanded(false);
+      setLayout('strip');
       setSelectedTile('');
     }
     setPromptCarpet(id && !media.hasChosenDevices ? id : '');
@@ -233,27 +256,34 @@ export default function App() {
     </header>
 
     <main className="game-area" data-testid="game-area" aria-label="Game area">
-      <div className="game-stage">
-        <section className={`call-strip ${carpet ? 'has-conversation' : 'is-quiet'} ${expanded ? 'expanded' : ''}`} aria-label="Conversation videos">
+      <div ref={stage} className={`game-stage ${layout === 'split' ? 'is-split' : ''}`}>
+        <section className={`call-strip ${carpet ? 'has-conversation' : 'is-quiet'} ${layout === 'full' ? 'expanded' : layout === 'split' ? 'split' : ''}`} style={layout === 'split' ? { flexBasis: `${splitWidth}%` } : undefined} aria-label="Conversation videos">
           <div className="conversation">
             {carpet ? <>
               <div className="conversation-heading"><span className="room-dot" style={{ background: carpet.color }} /><strong>{carpet.name}</strong><span className="conversation-count">{members.length} here</span>
                 {activeTile && <button className="gallery-button" onClick={() => setSelectedTile('')}>Show all videos</button>}
-                <button className="expand-button" aria-label={expanded ? 'Return to game' : 'Enlarge conversation videos'} onClick={() => { setSelectedTile(''); setExpanded((current) => !current); }}><Icon name={expanded ? 'close' : 'expand'} /><span>{expanded ? 'Back to game' : 'Expand'}</span></button>
+                {layout === 'strip' && <button className="expand-button" aria-label="Side by side" aria-pressed={false} onClick={() => changeLayout('split')}><Icon name="split" /><span>Side by side</span></button>}
+                {layout === 'full' ? <button className="expand-button" aria-label="Back to game" onClick={() => changeLayout(fullFrom)}><Icon name="close" /><span>Back to game</span></button>
+                  : <button className="expand-button" aria-label="Expand" aria-pressed={false} onClick={() => changeLayout('full')}><Icon name="expand" /><span>Expand</span></button>}
+                {layout === 'split' && <button className="expand-button" aria-label="Back to strip" onClick={() => changeLayout('strip')}><Icon name="close" /><span>Back to strip</span></button>}
               </div>
               <div className={`video-layout ${activeTile ? 'has-pin' : 'gallery'}`}><div className="video-grid" aria-label="Pin or unpin a video">
                 {screenMembers.map((player) => <VideoTile key={`screen-${player.id}`} selected={activeTile === `screen-${player.id}`} onSelect={() => selectTile(`screen-${player.id}`)} player={player} local={player.id === self?.id} screen stream={player.id === self?.id ? media.screenStream : media.remoteMedia[player.id]?.screenStream ?? null} media={media.remoteMedia[player.id]} />)}
                 {members.map((player) => <VideoTile key={player.id} selected={activeTile === player.id} onSelect={() => selectTile(player.id)} player={player} local={player.id === self?.id} mirror={mirrorSelfView} stream={player.id === self?.id ? media.localStream : media.remoteMedia[player.id]?.stream ?? null} media={media.remoteMedia[player.id]} />)}
               </div></div>
-              {expanded && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
+              {layout === 'full' && <p className="expanded-hint">You’re still in {carpet.name}. Return to the game to move.</p>}
             </> : <div className="quiet-floor"><Icon name="people" /><span>Walk onto a carpet to start a conversation.</span><span className={`quiet-status ${self?.mic || media.cameraOn ? 'is-enabled' : ''}`}><i />{self?.mic && media.cameraOn ? 'Mic & camera on' : self?.mic ? 'Microphone on' : media.cameraOn ? 'Camera on' : 'Devices off'}</span></div>}
           </div>
         </section>
-        <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onCancelMove={game.cancelMove} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
+        {layout === 'split' && <div className="split-divider" role="separator" aria-orientation="vertical" aria-label="Resize conversation videos" aria-valuenow={splitWidth} aria-valuemin={splitWidthMin} aria-valuemax={splitWidthMax} tabIndex={0} onKeyDown={nudgeDivider} onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)} onPointerMove={dragDivider} />}
+        <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onCancelMove={game.cancelMove} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || layout === 'full'} /></div>
           {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} />}
         </div>
       </div>
-      <footer className="game-hud">
+      {reconnecting ? <footer className="game-hud reconnecting-hud">
+        <div className="reconnecting-banner" role="status"><span className="reconnecting-dot" aria-hidden="true" /><strong>Reconnecting…</strong><span>You’ll be back where you were as soon as the office answers.</span></div>
+        <button type="button" className="secondary-button" onClick={game.leave}>Leave</button>
+      </footer> : <footer className="game-hud">
         <div className="location-info"><span className="location-dot" style={{ background: carpet?.color ?? '#a0aa9d' }} /><div><strong>{carpet?.name ?? 'Open floor'}</strong><span>{carpet ? `${members.length} in conversation` : 'No active conversation'}</span></div></div>
         <div className="media-controls"><div className={`device-group ${self?.mic ? 'enabled' : ''}`} role="group" aria-label="Microphone">
             <button className={self?.mic ? 'device-button enabled' : 'device-button'} disabled={!connected || media.busy || isMediaPrompt} aria-label={self?.mic ? 'Turn microphone off' : 'Turn microphone on'} aria-pressed={self?.mic ?? false} onClick={() => { void media.chooseMedia(!self?.mic, media.cameraOn); }}><Icon name="mic" off={!self?.mic} /><span>{self?.mic ? 'Mic on' : 'Mic off'}</span></button>
@@ -272,11 +302,11 @@ export default function App() {
         <div className="emoji-bar" role="group" aria-label="Emoji reactions">
           {reactions.map(({ emoji, label }) => <button key={emoji} type="button" className="emoji-button" disabled={!connected || modalOpen} aria-label={`React: ${label}`} title={label} onClick={() => game.send({ type: 'reaction', emoji })}><span aria-hidden="true">{emoji}</span></button>)}
         </div>
-      </footer>
+      </footer>}
       {bannerError && <div key={game.serverError ? `server-${game.serverErrorId}` : 'media'} className="inline-error" role="alert"><span>{bannerError}</span><button type="button" className="inline-error-close" aria-label="Dismiss error" title="Dismiss" onClick={dismissBanner}><Icon name="close" /></button></div>}
     </main>
 
-    {!connected && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
+    {!connected && !reconnecting && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
       <span className="welcome-pixel" aria-hidden="true"><Avatar avatar={avatar} customAvatar={customAvatar} size={88} /></span>
       <form onSubmit={join}><label className="field-label" htmlFor="display-name">Your display name</label><input id="display-name" maxLength={32} required autoComplete="off" placeholder="What should we call you?" value={name} onChange={(event) => setName(event.target.value)} disabled={game.status === 'connecting'} />
         {picker}
@@ -290,7 +320,7 @@ export default function App() {
     {settingsOpen && self && <Dialog title="Microphone settings" description="Reduce background noise so others can hear your voice more clearly.">
       <NoiseLevels media={media} disabled={media.busy || media.levelBusy} onChange={(level) => { void media.chooseNoiseLevel(level); }} />
       <p className="media-note" role="status">{noiseNote(media, self.mic)}</p>
-      <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice lasts until you reload this page.</p>
+      <p className="media-note">Echo cancellation and automatic volume adjustment are also requested. Processing happens on your device. Your noise choice is remembered in this browser.</p>
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <div className="form-actions"><button className="primary-button" disabled={media.busy || media.levelBusy} onClick={() => setEditingMicrophone(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}

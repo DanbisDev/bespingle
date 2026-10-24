@@ -265,7 +265,7 @@ try {
   await alice.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 2);
   await alice.getByTestId('video-peer').locator('.select-video').click();
   await alice.locator('.expanded .is-selected.is-speaking').waitFor();
-  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
   await alice.screenshot({ path: `${output}/speaking-highlight.png`, fullPage: true });
   for (const page of [alice, bob]) await page.evaluate(() => window.__setVoice(0));
   for (const page of [alice, bob]) await page.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 0);
@@ -318,7 +318,7 @@ try {
     assert(result.capture.some((track) => track.kind === 'video' && track.settings.width === 1280 && track.settings.height === 720 && track.settings.frameRate === 30), 'Capture requests 720p30');
   }
   await alice.screenshot({ path: `${output}/04-direct-call.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).click();
+  await alice.getByRole('button', { name: 'Expand', exact: true }).click();
   const equalTiles = await alice.locator('.expanded .video-tile').evaluateAll((tiles) => tiles.map((tile) => { const r = tile.getBoundingClientRect(); return { width: r.width, height: r.height }; }));
   assert.equal(await alice.locator('.is-selected').count(), 0, 'Expand opens an unpinned gallery');
   assert(equalTiles.every((tile) => tile.width > 500 && tile.height > 300 && Math.abs(tile.width - equalTiles[0].width) < 1 && Math.abs(tile.height - equalTiles[0].height) < 1), 'Unpinned cameras share the main view equally');
@@ -348,7 +348,50 @@ try {
   assert(await alice.getByTestId('video-self').evaluate((tile) => { const r = tile.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height > 200; }), 'Selected video fits a mobile viewport');
   await alice.setViewportSize({ width: 1440, height: 900 });
   await alice.screenshot({ path: `${output}/05-expanded-videos.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
+
+  // Side by side keeps the game playable beside the enlarged gallery.
+  await alice.getByRole('button', { name: 'Side by side', exact: true }).click();
+  await alice.locator('.call-strip.split .gallery').waitFor();
+  const box = (selector) => alice.locator(selector).evaluate((node) => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }; });
+  const [splitGallery, splitGame] = [await box('.split .video-grid'), await box('[data-testid="game-canvas"]')];
+  assert(splitGallery.width > 300 && splitGallery.height > 300 && splitGame.width > 300 && splitGame.height > 300, 'Split shows the gallery and the game together');
+  assert(splitGallery.right <= splitGame.left, 'The gallery sits left of the game without overlapping it');
+  const splitStart = await position(alice);
+  await go(alice, splitStart.x, splitStart.y - tileSize);
+  assert.equal((await position(alice)).y, splitStart.y - tileSize, 'The avatar walks while the videos are enlarged');
+  await go(alice, splitStart.x, splitStart.y);
+  await alice.getByTestId('video-peer').locator('.select-video').click();
+  assert(await alice.getByTestId('video-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Clicking a tile pins it inside split');
+  await alice.getByTestId('video-peer').locator('.select-video').click();
+  await alice.locator('.call-strip.split .gallery').waitFor();
+  assert.equal(await alice.locator('.is-selected').count(), 0, 'Clicking the pinned tile unpins it without leaving split');
+  const divider = alice.getByRole('separator', { name: 'Resize conversation videos', exact: true });
+  const splitWidth = () => alice.locator('.call-strip.split').evaluate((node) => node.getBoundingClientRect().width);
+  const widthBefore = await splitWidth();
+  const resting = await position(alice);
+  await divider.focus();
+  await alice.keyboard.press('ArrowRight');
+  assert.equal(await divider.getAttribute('aria-valuenow'), '55', 'ArrowRight widens the videos by five percent');
+  assert(await splitWidth() > widthBefore + 50, 'The video column grows');
+  assert.equal(await alice.evaluate(() => localStorage.getItem('bespingle_split_width')), '55', 'The divider width is remembered');
+  await alice.keyboard.press('Escape');
+  await alice.waitForTimeout(300);
+  assert.deepEqual(await position(alice), resting, 'Keys on the divider do not move the avatar');
+  assert.equal(await alice.locator('.call-strip.split').count(), 1, 'Escape does not leave split');
+  await alice.screenshot({ path: `${output}/05b-split-view.png`, fullPage: true });
+  await alice.getByRole('button', { name: 'Expand', exact: true }).click();
+  await alice.locator('.call-strip.expanded').waitFor();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
+  await alice.locator('.call-strip.split').waitFor();
+  await alice.setViewportSize({ width: 390, height: 844 });
+  const [stackedGallery, stackedGame] = [await box('.split .video-grid'), await box('[data-testid="game-canvas"]')];
+  assert(stackedGallery.bottom <= stackedGame.top && stackedGame.height > 50 && await divider.isHidden(), 'Narrow split stacks the videos above the game');
+  assert(await alice.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Narrow split has no horizontal scroll');
+  await alice.setViewportSize({ width: 1440, height: 900 });
+  await alice.getByRole('button', { name: 'Back to strip', exact: true }).click();
+  await alice.locator('.call-strip.split').waitFor({ state: 'detached' });
+  console.log('Side by side passed: playable game, pin and unpin, keyboard resize, Escape ignored, full and back, narrow stacking');
 
   // Separate screen tracks must arrive alongside the camera and microphone.
   const beforeSharing = await captureState(alice);
@@ -359,7 +402,7 @@ try {
   await bob.getByRole('button', { name: 'Share screen', exact: true }).click();
   await alice.getByTestId('screen-peer').waitFor();
   await alice.waitForFunction(() => document.querySelector('[data-testid="screen-peer"] video')?.currentTime > 0);
-  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).first().click();
+  await alice.getByRole('button', { name: 'Expand', exact: true }).first().click();
   const tileBounds = await alice.locator('.expanded .video-tile').evaluateAll((tiles) => tiles.map((tile) => { const r = tile.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; }));
   for (let i = 0; i < tileBounds.length; i++) for (let j = i + 1; j < tileBounds.length; j++) {
     const a = tileBounds[i], b = tileBounds[j];
@@ -377,7 +420,7 @@ try {
   await alice.setViewportSize({ width: 1440, height: 900 });
   await alice.getByTestId('screen-peer').locator('.select-video').click();
   await alice.screenshot({ path: `${output}/screen-sharing.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
   await alice.getByRole('button', { name: 'Stop sharing screen', exact: true }).click();
   await bob.getByTestId('screen-peer').waitFor({ state: 'detached' });
   assert(await alice.evaluate(() => window.__screens.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))));
@@ -515,6 +558,7 @@ try {
   assert(wire.types.every((type) => ['join', 'move', 'media', 'profile', 'signal'].includes(type)));
   assert(wire.rtcConfig.iceServers.every((server) => JSON.stringify(server.urls).includes('stun:') && !JSON.stringify(server.urls).includes('turn:')));
   // Leaving the game, rather than a carpet, ends every capture and clears the choice.
+  const lastTile = await position(alice);
   await alice.getByRole('button', { name: 'Leave office', exact: true }).click();
   await alice.getByRole('button', { name: 'Enter the office', exact: true }).waitFor();
   await alice.waitForFunction(() => window.__pcs.every((pc) => pc.connectionState === 'closed') && window.__streams.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended')));
@@ -523,13 +567,14 @@ try {
   await alice.getByLabel('Your display name').fill('Alice Updated');
   await alice.getByRole('button', { name: 'Enter the office', exact: true }).click();
   await alice.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+  // Entering from the form returns to the last tile, on the carpet, so it asks at once.
+  await alice.waitForFunction(({ x, y }) => {
+    const canvas = document.querySelector('[data-testid="game-canvas"]');
+    return Number(canvas.dataset.x) === x && Number(canvas.dataset.y) === y;
+  }, lastTile, { timeout: 2500 });
+  await choose(alice, 'Neither');
   await expectDevices(alice, false, false);
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'A new game starts with both devices off');
-  await alice.locator('[data-testid="game-canvas"]').focus();
-  await alice.keyboard.down('w');
-  await alice.getByRole('dialog').waitFor();
-  await alice.keyboard.up('w');
-  await choose(alice, 'Neither');
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'The next game asks again and Neither opens no devices');
 
   await alice.evaluate(() => { window.__holdScreen = true; });

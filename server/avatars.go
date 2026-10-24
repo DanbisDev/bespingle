@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image/png"
 	"io"
 	"net/http"
@@ -26,9 +27,31 @@ import (
 )
 
 const maxAvatarBytes = 1024 * 1024
-const avatarSpec = `Create a transparent PNG pixel-art sprite sheet, exactly 384 x 256 pixels (6 columns x 4 rows of 64 x 64 cells). Rows: down, left, right, up. Columns: idle, walk 1, walk 2, seated, dance 1, dance 2. Keep each character inside its cell, feet at (32, 58); no labels, gutters, shadows outside the cell, or background. All 24 cells must contain the same character in the corresponding pose. Upload the raw PNG bytes encoded as standard base64 (no data URL) with upload_avatar and the temporary upload code from the user's avatar selector. Only that browser receives the selection; there is no public gallery. Never request bucket credentials. The code expires after 30 minutes and permits one successful upload.`
+const (
+	avatarCell          = 64
+	avatarHeight        = 4 * avatarCell
+	minAvatarFrames     = 2
+	maxAvatarFrames     = 16
+	defaultAvatarFrames = 2
+)
+const avatarSpec = `Create a transparent PNG pixel-art sprite sheet of 64 x 64 cells in 4 rows, so exactly 256 pixels tall. Rows: down, left, right, up. Columns, left to right: idle, walk 1 ... walk W, seated, dance 1 ... dance D, so the sheet is 64 x (2 + W + D) pixels wide. Choose W walk frames and D dance frames, each a whole number from 2 to 16 (default 2, which gives the classic 384 x 256 sheet); pass them to upload_avatar as walkFrames and danceFrames. Walking plays the walk frames in order on a loop at 120 ms per frame; dancing plays the dance frames in order on a loop at 160 ms per frame. Keep each character inside its cell, feet at (32, 58); no labels, gutters, shadows outside the cell, or background. Every cell must contain the same character in the corresponding pose. The PNG may be at most 1 MiB. Upload the raw PNG bytes encoded as standard base64 (no data URL) with upload_avatar and the temporary upload code from the user's avatar selector. Only that browser receives the selection; there is no public gallery. Never request bucket credentials. The code expires after 30 minutes and permits one successful upload.`
 
+// avatarIDPattern matches a stored image's content hash. A profile's avatar
+// reference is that hash, optionally followed by its walk and dance frame counts.
 var avatarIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var avatarRefPattern = regexp.MustCompile(`^[a-f0-9]{64}(-([2-9]|1[0-6])-([2-9]|1[0-6]))?$`)
+
+// avatarRef names a sheet and its frame counts; the classic two-and-two sheet
+// keeps the bare hash so each sheet-and-counts pair has exactly one reference.
+func avatarRef(hash string, walk, dance int) string {
+	if walk == defaultAvatarFrames && dance == defaultAvatarFrames {
+		return hash
+	}
+	return fmt.Sprintf("%s-%d-%d", hash, walk, dance)
+}
+func validAvatarRef(ref string) bool {
+	return avatarRefPattern.MatchString(ref) && !strings.HasSuffix(ref, fmt.Sprintf("-%d-%d", defaultAvatarFrames, defaultAvatarFrames))
+}
 
 type avatarStorage interface {
 	Put(context.Context, string, []byte) error
@@ -154,7 +177,10 @@ func (s *avatarService) image(w http.ResponseWriter, r *http.Request) {
 
 type uploadAvatarInput struct {
 	UploadCode string `json:"uploadCode" jsonschema:"Temporary upload code supplied by the user's browser"`
-	PNGBase64  string `json:"pngBase64" jsonschema:"Standard base64-encoded transparent PNG sprite sheet (384 x 256 pixels), maximum decoded size 1 MiB"`
+	PNGBase64  string `json:"pngBase64" jsonschema:"Standard base64-encoded transparent PNG sprite sheet, 256 pixels tall and 64 x (2 + walkFrames + danceFrames) pixels wide (384 x 256 with the defaults), maximum decoded size 1 MiB"`
+	// Pointers distinguish an omitted count, which defaults to 2, from an explicit 0.
+	WalkFrames  *int `json:"walkFrames,omitempty" jsonschema:"Number of walk frames (columns after idle), a whole number from 2 to 16; default 2. Played in order on a loop at 120 ms per frame"`
+	DanceFrames *int `json:"danceFrames,omitempty" jsonschema:"Number of dance frames (columns after seated), a whole number from 2 to 16; default 2. Played in order on a loop at 160 ms per frame"`
 }
 type uploadAvatarOutput struct {
 	AvatarID string `json:"avatarId"`
@@ -168,6 +194,17 @@ func (s *avatarService) upload(ctx context.Context, _ *mcp.CallToolRequest, in u
 	if s.store == nil {
 		return fail("Bucket storage is not configured on this server.")
 	}
+	walk, dance := defaultAvatarFrames, defaultAvatarFrames
+	if in.WalkFrames != nil {
+		walk = *in.WalkFrames
+	}
+	if in.DanceFrames != nil {
+		dance = *in.DanceFrames
+	}
+	if walk < minAvatarFrames || walk > maxAvatarFrames || dance < minAvatarFrames || dance > maxAvatarFrames {
+		return fail(fmt.Sprintf("walkFrames and danceFrames must each be a whole number from %d to %d. Call avatar_spec for the layout.", minAvatarFrames, maxAvatarFrames))
+	}
+	width := avatarCell * (2 + walk + dance)
 	s.mu.Lock()
 	g := s.grants[in.UploadCode]
 	if g == nil || time.Now().After(g.Expires) || g.Busy || g.AvatarID != "" {
@@ -191,16 +228,17 @@ func (s *avatarService) upload(ctx context.Context, _ *mcp.CallToolRequest, in u
 		return fail("Provide standard base64 PNG bytes without a data URL prefix.")
 	}
 	config, err := png.DecodeConfig(bytes.NewReader(data))
-	if err != nil || config.Width != 384 || config.Height != 256 {
-		return fail("PNG must be exactly 384 x 256 pixels. Call avatar_spec for the layout.")
+	if err != nil || config.Width != width || config.Height != avatarHeight {
+		return fail(fmt.Sprintf("PNG must be exactly %d x %d pixels for %d walk and %d dance frames. Call avatar_spec for the layout.", width, avatarHeight, walk, dance))
 	}
 	img, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
 		return fail("PNG is corrupt.")
 	}
 	visible, transparent := false, false
-	for y := 0; y < 256; y++ {
-		for x := 0; x < 384; x++ {
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			_, _, _, alpha := img.At(x, y).RGBA()
 			visible = visible || alpha > 0
 			transparent = transparent || alpha < 65535
@@ -218,12 +256,13 @@ func (s *avatarService) upload(ctx context.Context, _ *mcp.CallToolRequest, in u
 		return fail("PNG exceeds 1 MiB after normalization.")
 	}
 	sum := sha256.Sum256(clean.Bytes())
-	id := hex.EncodeToString(sum[:])
+	hash := hex.EncodeToString(sum[:])
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if err = s.store.Put(ctx, id, clean.Bytes()); err != nil {
+	if err = s.store.Put(ctx, hash, clean.Bytes()); err != nil {
 		return fail("Bucket upload failed. Retry with the same code.")
 	}
+	id := avatarRef(hash, walk, dance)
 	s.mu.Lock()
 	g.AvatarID = id
 	s.mu.Unlock()
@@ -234,7 +273,7 @@ func (s *avatarService) mcpHandler() http.Handler {
 	mcp.AddTool(server, &mcp.Tool{Name: "avatar_spec", Description: "Get the sprite sheet format and instructions for designing a custom Bespingle avatar."}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, map[string]string, error) {
 		return nil, map[string]string{"instructions": avatarSpec}, nil
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "upload_avatar", Description: "Upload a custom avatar PNG to Bespingle's bucket for the browser that supplied an upload code. Call avatar_spec before designing."}, s.upload)
+	mcp.AddTool(server, &mcp.Tool{Name: "upload_avatar", Description: "Upload a custom avatar PNG to Bespingle's bucket for the browser that supplied an upload code, with its walk and dance frame counts (2 to 16 each, default 2). Call avatar_spec before designing."}, s.upload)
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 }
 func (h *hub) avatarOrigin(next http.Handler) http.Handler {

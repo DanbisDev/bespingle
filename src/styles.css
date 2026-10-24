@@ -84,31 +84,39 @@ h1, h2, p { margin: 0; }
 .play-audio { position: absolute; inset: 25% 10% 35%; background: #b8e9df; color: #152f32; border: 0; border-radius: 5px; font-size: 10px; font-weight: 600; z-index: 2; }
 
 /* Expanding reuses the mounted video tree, preserving audio and playback. */
-.expanded .conversation { position: absolute; inset: 0; background: #101722fc; z-index: 4; height: auto; padding: 16px 20px; display: flex; flex-direction: column; }
-.expanded .conversation-heading { flex: 0 0 30px; height: 30px; font-size: 13px; margin-bottom: 14px; }
-.expanded .conversation-count { font-size: 11px; }
-.expanded .expand-button { background: #202c3e; border: 1px solid #394961; padding: 7px 10px; font-size: 11px; }
-.expanded .video-layout { position: relative; flex: 1; min-height: 0; }
-.expanded .video-grid { height: 78px; gap: 7px; overflow-x: auto; }
-.expanded .gallery .video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); grid-auto-rows: minmax(160px, 1fr); height: 100%; gap: 12px; }
-.expanded .gallery .video-tile { width: 100%; min-width: 0; border-radius: 10px; }
+:is(.expanded, .split) .conversation { padding: 16px 20px; display: flex; flex-direction: column; }
+.expanded .conversation { position: absolute; inset: 0; background: #101722fc; z-index: 4; height: auto; }
+:is(.expanded, .split) .conversation-heading { flex: 0 0 30px; height: 30px; font-size: 13px; margin-bottom: 14px; }
+:is(.expanded, .split) .conversation-count { font-size: 11px; }
+:is(.expanded, .split) .expand-button { background: #202c3e; border: 1px solid #394961; padding: 7px 10px; font-size: 11px; }
+:is(.expanded, .split) .video-layout { position: relative; flex: 1; min-height: 0; }
+:is(.expanded, .split) .video-grid { height: 78px; gap: 7px; overflow-x: auto; }
+:is(.expanded, .split) .gallery .video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); grid-auto-rows: minmax(160px, 1fr); height: 100%; gap: 12px; }
+:is(.expanded, .split) .gallery .video-tile { width: 100%; min-width: 0; border-radius: 10px; }
 .gallery-button { margin-left: auto; flex-shrink: 0; border: 1px solid #394961; border-radius: 5px; background: #202c3e; color: #bdc9da; padding: 7px 10px; font-size: 11px; }
 .gallery-button:hover { background: #273346; color: #f5f8fc; }
-.gallery-button + .expand-button { margin-left: 0; }
+.gallery-button + .expand-button, .expand-button + .expand-button { margin-left: 0; }
 .pin-label { position: absolute; top: 6px; right: 6px; padding: 4px 7px; border-radius: 4px; background: #101722df; color: #f2f6fc; font-size: 10px; opacity: 0; }
 .select-video:hover .pin-label, .select-video:focus-visible .pin-label, .is-selected .pin-label { opacity: 1; }
 
 .select-video { position: absolute; inset: 0; z-index: 1; width: 100%; border: 0; background: transparent; cursor: zoom-in; border-radius: inherit; }
 .select-video:hover { box-shadow: inset 0 0 0 2px #81d8ca; }
 .select-video:focus-visible { outline: 3px solid #81d8ca; outline-offset: -3px; }
-.expanded .video-tile.is-selected { position: absolute; inset: 90px 0 0; width: 100%; min-width: 0; height: auto; border-radius: 10px; }
-.expanded .is-selected .select-video { cursor: zoom-out; }
-.expanded .is-selected video { object-fit: contain; }
-.expanded :is(.is-selected, .gallery .video-tile) .video-avatar canvas { width: 144px !important; height: 144px !important; }
-.expanded :is(.is-selected, .gallery .video-tile) .video-caption { font-size: 13px; padding: 26px 13px 11px; }
-.expanded :is(.is-selected, .gallery .video-tile) .video-caption svg { width: 17px; height: 17px; }
-.expanded .is-selected .connection-label { font-size: 11px; top: 12px; left: 12px; right: auto; max-width: calc(100% - 24px); padding: 5px 8px; }
+:is(.expanded, .split) .video-tile.is-selected { position: absolute; inset: 90px 0 0; width: 100%; min-width: 0; height: auto; border-radius: 10px; }
+:is(.expanded, .split) .is-selected .select-video { cursor: zoom-out; }
+:is(.expanded, .split) .is-selected video { object-fit: contain; }
+:is(.expanded, .split) :is(.is-selected, .gallery .video-tile) .video-avatar canvas { width: 144px !important; height: 144px !important; }
+:is(.expanded, .split) :is(.is-selected, .gallery .video-tile) .video-caption { font-size: 13px; padding: 26px 13px 11px; }
+:is(.expanded, .split) :is(.is-selected, .gallery .video-tile) .video-caption svg { width: 17px; height: 17px; }
+:is(.expanded, .split) .is-selected .connection-label { font-size: 11px; top: 12px; left: 12px; right: auto; max-width: calc(100% - 24px); padding: 5px 8px; }
 .expanded-hint { flex-shrink: 0; color: #a6b5ca; font-size: 11px; padding-top: 12px; text-align: center; }
+
+.game-stage.is-split { flex-direction: row; }
+.game-stage.is-split > .call-strip { height: auto; min-width: 0; min-height: 0; border-bottom: 0; }
+.split-divider { flex: 0 0 8px; position: relative; cursor: col-resize; touch-action: none; background: #131b27; border-inline: 1px solid var(--border); }
+.split-divider::after { content: ''; position: absolute; top: 50%; left: 50%; width: 2px; height: 32px; transform: translate(-50%, -50%); border-radius: 1px; background: #4a5a72; }
+.split-divider:hover::after, .split-divider:focus-visible::after { background: var(--accent); }
+.split-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .game-hud { flex: 0 0 auto; min-height: 64px; border-top: 1px solid var(--border); background: #101722; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 14px; padding: 12px 20px 8px; position: relative; z-index: 5; }
 .emoji-bar { flex: 0 0 100%; display: flex; justify-content: center; gap: 6px; padding-top: 8px; }
@@ -141,6 +149,14 @@ h1, h2, p { margin: 0; }
 .device-group.enabled .device-more { border-left-color: #2b5653; }
 .device-group > .device-button:hover:not(:disabled), .device-group > .device-button:focus-visible { position: relative; z-index: 1; }
 .hud-divider { height: 25px; width: 1px; background: #303c50; margin: 0 5px; }
+.reconnecting-hud { justify-content: center; gap: 16px; }
+.reconnecting-banner { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.reconnecting-banner strong { color: var(--amber); font-size: 13px; }
+.reconnecting-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); animation: reconnecting-pulse 1.2s ease-in-out infinite; }
+@keyframes reconnecting-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .reconnecting-dot { animation: none; } }
+.reconnecting-hud .secondary-button { padding: 8px 16px; }
+@media (max-width: 560px) { .reconnecting-banner span:not(.reconnecting-dot) { display: none; } }
 .leave-button { width: 36px; height: 36px; border: 1px solid #614044; background: #36232d; color: #f0b6ae; display: grid; place-items: center; border-radius: 8px; }
 .leave-button:hover:not(:disabled) { border-color: #a8686a; background: #54313c; }
 .leave-button svg { height: 17px; width: 17px; }
@@ -225,8 +241,8 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
   .movement-hint { display: none; }
   .media-controls { gap: 6px; }
   .hud-divider { margin: 0 2px; }
-  .expanded .conversation { padding: 10px; }
-  .expanded .gallery .video-grid { grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 8px; }
+  :is(.expanded, .split) .conversation { padding: 10px; }
+  :is(.expanded, .split) .gallery .video-grid { grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 8px; }
   .expanded-hint { font-size: 10px; }
   .dialog-backdrop { padding: 16px; }
   .dialog { padding: 24px; max-height: calc(100dvh - 32px); }
@@ -271,6 +287,8 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
   .chat-note { padding-bottom: 6px; }
   .chat-compose { padding: 6px 12px; }
   .carpet-chat.collapsed { flex-basis: auto; }
+  .game-stage.is-split { flex-direction: column; }
+  .split-divider { display: none; }
 }
 
 /* Shared content stays readable and is never mirrored or cropped. */
