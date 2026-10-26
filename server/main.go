@@ -477,6 +477,7 @@ func (h *hub) remove(c *client) {
 	c.stop()
 	if h.clients[c.player.ID] == c {
 		delete(h.clients, c.player.ID)
+		h.pruneScrimbaLocked()
 		h.broadcastLocked()
 	}
 }

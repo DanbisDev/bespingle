@@ -220,7 +220,7 @@ export default function App() {
           </div>
         </section>
         <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onCancelMove={game.cancelMove} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || expanded} /></div>
-          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} openScrimba={game.openScrimba} />}
+          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} openScrimba={game.openScrimba} games={Object.values(game.scrimbaGames).filter((item) => item.carpetId === carpet.id && item.expiresAt > game.serverNow())} />}
         </div>
       </div>
       <footer className="game-hud">
