@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import { Scrimba } from './Scrimba';
 import { CarpetChat } from './CarpetChat';
 import { GameCanvas } from './GameCanvas';
 import { world } from './world';
@@ -223,7 +224,7 @@ export default function App() {
   }, [media.whiteboardActive]);
 
   const isMediaPrompt = !!promptCarpet && promptCarpet === self?.carpetId;
-  const modalOpen = !connected || editingProfile || editingBackground || editingMicrophone || editingVideo || isMediaPrompt;
+  const modalOpen = !!game.scrimbaOpen || !connected || editingProfile || editingBackground || editingMicrophone || editingVideo || isMediaPrompt;
   const settingsOpen = editingMicrophone && connected && !!self;
   const backgroundOpen = editingBackground && connected && !!self;
   const videoOpen = editingVideo && connected && !!self;
@@ -277,7 +278,7 @@ export default function App() {
         </section>
         {layout === 'split' && <div className="split-divider" role="separator" aria-orientation="vertical" aria-label="Resize conversation videos" aria-valuenow={splitWidth} aria-valuemin={splitWidthMin} aria-valuemax={splitWidthMax} tabIndex={0} onKeyDown={nudgeDivider} onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)} onPointerMove={dragDivider} />}
         <div className="play-space"><div className="game-viewport"><GameCanvas players={game.players} selfId={game.selfId} onMove={game.move} onCancelMove={game.cancelMove} onDance={() => game.send({ type: 'dance' })} serverNow={game.serverNow} disabled={modalOpen || layout === 'full'} /></div>
-          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} />}
+          {connected && carpet && <CarpetChat key={`${game.selfId}:${carpet.id}`} carpet={carpet} messages={game.messages} selfId={game.selfId} send={game.send} openScrimba={game.openScrimba} games={Object.values(game.scrimbaGames).filter((item) => item.carpetId === carpet.id && item.expiresAt > game.serverNow())} />}
         </div>
       </div>
       {reconnecting ? <footer className="game-hud reconnecting-hud">
@@ -305,6 +306,8 @@ export default function App() {
       </footer>}
       {bannerError && <div key={game.serverError ? `server-${game.serverErrorId}` : 'media'} className="inline-error" role="alert"><span>{bannerError}</span><button type="button" className="inline-error-close" aria-label="Dismiss error" title="Dismiss" onClick={dismissBanner}><Icon name="close" /></button></div>}
     </main>
+
+    {connected && game.scrimbaOpen && <Scrimba key={game.scrimbaOpen} game={game.scrimbaGames[game.scrimbaOpen]} selfId={game.selfId} send={game.send} close={game.closeScrimba} error={game.serverError} />}
 
     {!connected && !reconnecting && <Dialog title="Make yourself at home." description="Pick a familiar face, add your name, and step into the office." className="join-dialog">
       <span className="welcome-pixel" aria-hidden="true"><Avatar avatar={avatar} customAvatar={customAvatar} size={88} /></span>

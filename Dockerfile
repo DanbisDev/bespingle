@@ -6,7 +6,7 @@ RUN npm ci --no-audit --no-fund
 COPY index.html tsconfig.json vite.config.ts ./
 COPY src ./src
 COPY public ./public
-COPY server/world.json ./server/world.json
+COPY server/world.json server/scrimba.json ./server/
 RUN npm run build
 
 FROM golang:1.26-alpine AS backend

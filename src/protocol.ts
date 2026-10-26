@@ -22,12 +22,16 @@ export type CancelMove = () => Promise<MoveResult>;
 
 export type ChatMessage = {
   type: 'chat';
+  scrimbaId?: string;
   carpetId: string;
   from: string;
   name: string;
   text: string;
 };
 
+export type ScrimbaGuess = { emojis?: string[]; marks: ('correct' | 'present' | 'absent')[] };
+export type ScrimbaPlayer = { id: string; name: string; guesses: ScrimbaGuess[]; done: boolean; won: boolean };
+export type ScrimbaState = { type: 'scrimba-state'; expiresAt: number; id: string; carpetId: string; players: ScrimbaPlayer[]; solution?: string[] };
 /**
  * x, y and facing ask for a tile, all three or none. The server places the
  * person there only if it is free; otherwise it searches from it, or places
@@ -49,6 +53,7 @@ export type ServerMessage =
   | { type: 'state'; players: Player[]; serverNow: number }
   | MoveResult
   | ChatMessage
+  | ScrimbaState
   | Signal
   | { type: 'error'; message: string };
 

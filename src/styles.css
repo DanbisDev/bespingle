@@ -327,6 +327,37 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .quality-choice small { color: #afbbcd; font-size: 11px; line-height: 1.4; }
 @media (max-width: 480px) { .quality-settings { grid-template-columns: 1fr; } }
 
+.scrimba-join { margin-top: 8px; padding: 7px 12px; border-radius: 7px; background: #304d42; border: 1px solid #659278; font-weight: 700; }
+.scrimba-dialog { position: fixed; inset: 0; margin: auto; width: 510px; color: var(--text); padding: 24px; }
+.scrimba-dialog::backdrop { background: #050a12c9; backdrop-filter: blur(7px); }
+.scrimba-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.scrimba-eyebrow { font-size: 9px; letter-spacing: 2px; color: #a8c9b6; }
+.scrimba-heading h2 { margin-top: 6px; }
+.scrimba-heading .secondary-button { width: auto; margin: 0; }
+.scrimba-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; font-size: 11px; color: #c4cedc; }
+.scrimba-players { display: flex; gap: 6px; overflow-x: auto; padding: 3px 0 8px; }
+.scrimba-players button { flex-shrink: 0; max-width: 180px; overflow-wrap: anywhere; border: 1px solid #47576e; border-radius: 8px; padding: 7px 12px; background: #253145; font-size: 11px; }
+.scrimba-players button[aria-pressed=true] { background: #354e47; border-color: #85baa0; }
+.scrimba-players small { display: block; margin-top: 4px; color: #b9c7d7; font-size: 9px; }
+.scrimba-view-note { margin: 4px 0 14px; color: #b9c7d7; font-size: 11px; min-height: 16px; }
+.scrimba-board { display: grid; gap: 6px; width: min(100%, 306px); margin: auto; }
+.scrimba-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.scrimba-cell { display: grid; place-items: center; aspect-ratio: 1; border: 2px solid #455267; border-radius: 7px; background: #162030; font-size: clamp(21px, 5vw, 29px); font-weight: 700; color: white; }
+.scrimba-cell.filled { border-color: #8a9cb4; }
+.scrimba-cell.correct, .scrimba-keyboard .correct { background: #356f4d; border-color: #71b38a; }
+.scrimba-cell.present, .scrimba-keyboard .present { background: #8b6a20; border-color: #d4b25a; }
+.scrimba-cell.absent, .scrimba-keyboard .absent { background: #080d14; border-color: #202936; }
+.scrimba-cell.absent .scrimba-symbol, .scrimba-keyboard .absent .scrimba-symbol { opacity: .45; filter: grayscale(1); }
+.scrimba-result { text-align: center; color: #bde0c9; font-size: 13px; line-height: 1.8; margin: 10px 0; }
+.scrimba-keyboard { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+.scrimba-keyboard button { min-height: 43px; border: 1px solid #53647c; background: #2d3c52; border-radius: 7px; font-size: 24px; }
+.scrimba-actions { display: flex; gap: 10px; margin-top: 10px; }
+.scrimba-actions button { flex: 1; width: auto; margin: 0; justify-content: center; }
+.scrimba-footnote { color: #a0b0c6; font-size: 10px; line-height: 1.6; margin-top: 14px; }
+@media (max-height: 850px), (max-width: 480px) {
+  .scrimba-dialog { padding: 20px; max-width: calc(100vw - 32px); }
+  .scrimba-board { width: min(100%, 260px); }
+}
 /* Whiteboard overlay */
 .whiteboard-backdrop { position: fixed; inset: 0; z-index: 19; background: #050a12cc; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .whiteboard-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; max-width: 960px; max-height: calc(100dvh - 48px); width: 100%; }
@@ -338,3 +369,5 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .whiteboard-tool[aria-pressed="true"] { background: #183b3c; border-color: #376c68; color: #a7eee0; }
 .whiteboard-close { margin-left: auto; }
 .whiteboard-canvas { display: block; width: 100%; height: auto; aspect-ratio: 16/9; cursor: crosshair; touch-action: none; background: #1a2233; }
+
+.scrimba-sessions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }

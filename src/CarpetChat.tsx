@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ChatMessage, Send } from './protocol';
+import type { ChatMessage, ScrimbaState, Send } from './protocol';
 import type { Carpet } from './world';
 
-export function CarpetChat({ carpet, messages, selfId, send }: {
-  carpet: Carpet; messages: ChatMessage[]; selfId: string; send: Send;
+export function CarpetChat({ carpet, messages, selfId, send, openScrimba, games }: {
+  carpet: Carpet; messages: ChatMessage[]; selfId: string; send: Send; openScrimba: (id: string) => void; games: ScrimbaState[];
 }) {
   const [draft, setDraft] = useState('');
   const [open, setOpen] = useState(true);
@@ -13,10 +13,11 @@ export function CarpetChat({ carpet, messages, selfId, send }: {
   return <aside className={`carpet-chat ${open ? '' : 'collapsed'}`} aria-label={`${carpet.name} chat`}>
     <div className="chat-heading"><strong>{carpet.name} chat</strong><button type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label={open ? 'Hide carpet chat' : 'Show carpet chat'}>{open ? 'Hide' : 'Show'}</button></div>
     {open && <>
+      {games.length > 0 && <nav className="scrimba-sessions" aria-label="Joined Scrimba games">{games.map((game, index) => <button type="button" className="scrimba-join" key={game.id} onClick={() => openScrimba(game.id)}>Resume Scrimba {index + 1}</button>)}</nav>}
       <p className="chat-note">Live messages for people on this carpet. Cleared when you leave. No saved history.</p>
       <div className="chat-messages" role="log" aria-label="Carpet messages" aria-live="polite" aria-relevant="additions" tabIndex={0}>
         {!messages.length && <p className="chat-empty">Say hello to the people here.</p>}
-        {messages.map((message, index) => <div className="chat-message" key={index}><strong>{message.name}{message.from === selfId ? ' (you)' : ''}</strong><p>{message.text}</p></div>)}
+        {messages.map((message, index) => <div className="chat-message" key={index}><strong>{message.name}{message.from === selfId ? ' (you)' : ''}</strong><p>{message.text}</p>{message.scrimbaId && <button type="button" className="scrimba-join" onClick={() => openScrimba(message.scrimbaId!)}>Launch Scrimba</button>}</div>)}
         <div ref={end} />
       </div>
       <form className="chat-compose" onSubmit={(event) => {
@@ -26,7 +27,7 @@ export function CarpetChat({ carpet, messages, selfId, send }: {
         setDraft('');
       }}>
         <label className="sr-only" htmlFor="chat-message">Message this carpet</label>
-        <input id="chat-message" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} autoComplete="off" placeholder="Message this carpet…" />
+        <input id="chat-message" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} autoComplete="off" placeholder="Message or /scrimba…" />
         <button type="submit" disabled={!draft.trim()}>Send</button>
       </form>
     </>}

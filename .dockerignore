@@ -17,6 +17,7 @@
 !server/
 !server/*.go
 !server/world.json
+!server/scrimba.json
 
 # Keep local credentials out even if they are placed below an included directory.
 **/.env*

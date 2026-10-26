@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Player } from './world';
-import type { CancelMove, ChatMessage, Join, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
+import type { CancelMove, ChatMessage, ScrimbaState, Join, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
 import { pageBuild } from './build';
 import { readProfile } from './profile';
 import { asTile, claimOffice, holdsOffice, pageDevices, readSession, recordDevices, releaseOffice, saveSession } from './session';
@@ -25,6 +25,8 @@ function sessionStorageSet(key: string, value: string) {
 }
 
 export function useGame() {
+  const [scrimbaGames, setScrimbaGames] = useState<Record<string, ScrimbaState>>({});
+  const [scrimbaOpen, setScrimbaOpen] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const currentCarpet = useRef('');
   const currentSelf = useRef('');
@@ -129,6 +131,8 @@ export function useGame() {
     pendingSignals.current = [];
     currentCarpet.current = currentSelf.current = '';
     setMessages([]);
+    setScrimbaGames({});
+    setScrimbaOpen('');
     clearMoves();
     current?.close();
     setPlayers([]);
@@ -145,6 +149,8 @@ export function useGame() {
     pendingSignals.current = [];
     currentCarpet.current = currentSelf.current = '';
     setMessages([]);
+    setScrimbaGames({});
+    setScrimbaOpen('');
     clearMoves();
     clockOffset.current = Date.now() - performance.now();
     clockReady.current = false;
@@ -175,7 +181,10 @@ export function useGame() {
         const self = message.players.find((player) => player.id === currentSelf.current);
         remember(asTile(self));
         const carpetId = message.players.find((player) => player.id === currentSelf.current)?.carpetId ?? '';
-        if (carpetId !== currentCarpet.current) setMessages([]);
+        if (carpetId !== currentCarpet.current) {
+          setMessages([]);
+          setScrimbaOpen('');
+        }
         currentCarpet.current = carpetId;
         setPlayers(message.players);
         if (message.type === 'welcome') {
@@ -204,6 +213,11 @@ export function useGame() {
       } else if (message.type === 'chat') {
         if (currentCarpet.current && message.carpetId === currentCarpet.current) {
           setMessages((current) => [...current.slice(-99), message]);
+          if (message.scrimbaId && message.from === currentSelf.current) setScrimbaOpen(message.scrimbaId);
+        }
+      } else if (message.type === 'scrimba-state') {
+        if (message.carpetId === currentCarpet.current) {
+          setScrimbaGames((current) => ({ ...Object.fromEntries(Object.entries(current).filter(([, item]) => item.expiresAt > serverNow())), [message.id]: message }));
         }
       } else if (message.type === 'move-result') {
         const pending = pendingMoves.current.get(message.requestId);
@@ -237,6 +251,8 @@ export function useGame() {
       pendingSignals.current = [];
       currentCarpet.current = currentSelf.current = '';
       setMessages([]);
+      setScrimbaGames({});
+      setScrimbaOpen('');
       clearMoves();
       setPlayers([]);
       setSelfId('');
@@ -253,7 +269,7 @@ export function useGame() {
     ws.onerror = () => {
       if (socket.current === ws && !inOffice.current) setError('Could not reach the office. Check that the Go server is running.');
     };
-  }, [clearMoves, clearServerError, markOut, remember]);
+  }, [clearMoves, clearServerError, markOut, remember, serverNow]);
 
   const join = useCallback((name: string, avatar: number, customAvatar = '') => {
     // A join from the form is in the office once the server welcomes it. It
@@ -295,5 +311,11 @@ export function useGame() {
     clearTimeout(serverErrorTimer.current);
   }, [clearMoves]);
 
-  return { messages, players, selfId, rejoined, status, error, serverError: serverError.message, serverErrorId: serverError.id, clearServerError, join, leave, send, move, cancelMove, serverNow, signalHandler };
+  const openScrimba = (id: string) => {
+    clearServerError();
+    setScrimbaOpen(id);
+    send({ type: 'scrimba-join', id });
+  };
+
+  return { scrimbaGames, scrimbaOpen, openScrimba, closeScrimba: () => setScrimbaOpen(''), messages, players, selfId, rejoined, status, error, serverError: serverError.message, serverErrorId: serverError.id, clearServerError, join, leave, send, move, cancelMove, serverNow, signalHandler };
 }
