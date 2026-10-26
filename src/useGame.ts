@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Player } from './world';
-import type { CancelMove, ChatMessage, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
+import type { CancelMove, ChatMessage, DrawMessage, ServerMessage, Signal, Send, Move, MoveResult } from './protocol';
 
 type PendingMove = { resolve: (result: MoveResult) => void; timer: ReturnType<typeof setTimeout> };
 
@@ -14,6 +14,7 @@ export function useGame() {
   const [error, setError] = useState('');
   const socket = useRef<WebSocket | null>(null);
   const signalHandler = useRef<(signal: Signal) => void>(() => {});
+  const drawHandler = useRef<(msg: DrawMessage) => void>(() => {});
   const pendingSignals = useRef<Signal[]>([]);
   const [signalRevision, setSignalRevision] = useState(0);
   const clockOffset = useRef(Date.now() - performance.now());
@@ -113,6 +114,8 @@ export function useGame() {
         if (currentCarpet.current && message.carpetId === currentCarpet.current) {
           setMessages((current) => [...current.slice(-99), message]);
         }
+      } else if (message.type === 'draw') {
+        drawHandler.current(message);
       } else if (message.type === 'move-result') {
         const pending = pendingMoves.current.get(message.requestId);
         if (pending) {
@@ -149,5 +152,5 @@ export function useGame() {
     clearMoves();
   }, [clearMoves]);
 
-  return { messages, players, selfId, status, error, join, leave, send, move, cancelMove, serverNow, signalHandler };
+  return { messages, players, selfId, status, error, join, leave, send, move, cancelMove, serverNow, signalHandler, drawHandler };
 }

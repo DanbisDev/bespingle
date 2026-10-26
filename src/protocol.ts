@@ -28,11 +28,26 @@ export type ChatMessage = {
   text: string;
 };
 
+export type DrawSegment =
+  | { op: 'begin'; x: number; y: number; color: string; width: number }
+  | { op: 'move'; x: number; y: number }
+  | { op: 'clear' }
+  | { op: 'snapshot-request' }
+  | { op: 'snapshot'; data: string };
+
+export type DrawMessage = {
+  type: 'draw';
+  carpetId: string;
+  from: string;
+  segments: DrawSegment[];
+};
+
 export type ServerMessage =
   | { type: 'welcome'; selfId: string; players: Player[]; serverNow: number }
   | { type: 'state'; players: Player[]; serverNow: number }
   | MoveResult
   | ChatMessage
+  | DrawMessage
   | Signal
   | { type: 'error'; message: string };
 

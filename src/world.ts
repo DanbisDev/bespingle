@@ -69,6 +69,7 @@ export interface Player {
   mic: boolean;
   camera: boolean;
   screen?: boolean;
+  whiteboard?: boolean;
   move?: Move;
   /** At most one step queued behind move, starting exactly when move ends. */
   next?: Move;
