@@ -1,3 +1,5 @@
+import { parseAvatarRef } from './profile';
+
 type Context = CanvasRenderingContext2D;
 type Direction = 'down' | 'up' | 'left' | 'right';
 
@@ -313,8 +315,10 @@ function makeSprite(index: number, direction: Direction, seated: boolean, frame:
 }
 
 const customSprites = new Map<string, HTMLImageElement>();
-function customSprite(id: string) {
-  let image = customSprites.get(id);
+// Images are keyed by content hash, so references that differ only by frame
+// counts share one download; each reference checks the size it expects.
+function customSprite(hash: string) {
+  let image = customSprites.get(hash);
   if (!image) {
     if (customSprites.size >= 128) customSprites.delete(customSprites.keys().next().value!);
     image = new Image();
@@ -322,16 +326,21 @@ function customSprite(id: string) {
     image.onerror = () => {
       // A busy bucket proxy may briefly reject a read. Keep the default visible
       // and retry without retaining an unlimited number of image objects.
-      if (retries++ < 2) setTimeout(() => { if (customSprites.get(id) === image) image!.src = `/api/avatars/${id}`; }, 1500 * retries);
+      if (retries++ < 2) setTimeout(() => { if (customSprites.get(hash) === image) image!.src = `/api/avatars/${hash}`; }, 1500 * retries);
     };
     image.onload = () => window.dispatchEvent(new Event('avatar-loaded'));
-    image.src = `/api/avatars/${id}`;
-    customSprites.set(id, image);
+    image.src = `/api/avatars/${hash}`;
+    customSprites.set(hash, image);
   }
   return image;
 }
 
-/** Original 64-pixel chibi sprites, anchored at the feet and cached by pose. */
+/**
+ * Original 64-pixel chibi sprites, anchored at the feet and cached by pose.
+ * walkTime is the viewer's clock while walking and danceTime the time since the
+ * dance started, both in ms; each avatar derives its own cell from them.
+ * Returns the custom sheet column drawn, or -1 when a built-in sprite was drawn.
+ */
 export function drawAvatar(
   ctx: Context,
   x: number,
@@ -339,24 +348,28 @@ export function drawAvatar(
   avatar: number,
   facing: string,
   seated: boolean,
-  frame = 0,
+  walkTime?: number,
   scale = 1,
-  danceFrame = 0,
+  danceTime?: number,
   customAvatar?: string,
-) {
-  if (customAvatar && /^[a-f0-9]{64}$/.test(customAvatar)) {
-    const image = customSprite(customAvatar);
-    if (image.complete && image.naturalWidth === 384 && image.naturalHeight === 256) {
+): number {
+  const ref = customAvatar ? parseAvatarRef(customAvatar) : undefined;
+  if (ref) {
+    const image = customSprite(ref.hash);
+    if (image.complete && image.naturalWidth === 64 * (2 + ref.walk + ref.dance) && image.naturalHeight === 256) {
       const row = facing === 'left' ? 1 : facing === 'right' ? 2 : facing === 'up' ? 3 : 0;
-      const column = danceFrame ? 4 + (danceFrame % 2) : seated ? 3 : frame ? (frame % 2 ? 1 : 2) : 0;
+      // Columns: idle, walk 1 … W, seated, dance 1 … D.
+      const column = danceTime !== undefined ? ref.walk + 2 + Math.floor(danceTime / 160) % ref.dance
+        : seated ? ref.walk + 1 : walkTime !== undefined ? Math.floor(walkTime / 120) % ref.walk + 1 : 0;
       ctx.save(); ctx.imageSmoothingEnabled = false;
       ctx.drawImage(image, column * 64, row * 64, 64, 64, Math.round(x - 40 * scale), Math.round(y - 72.5 * scale), 80 * scale, 80 * scale);
-      ctx.restore(); return;
+      ctx.restore(); return column;
     }
   }
   const index = ((Math.trunc(avatar) % palettes.length) + palettes.length) % palettes.length;
   const direction: Direction = facing === 'up' || facing === 'left' || facing === 'right' ? facing : 'down';
-  const pose = seated || frame === 0 ? 0 : Math.floor(frame) % 2 === 0 ? 2 : 1;
+  const pose = seated || walkTime === undefined ? 0 : Math.floor(walkTime / 120) % 2 + 1;
+  const danceFrame = danceTime === undefined ? 0 : Math.floor(danceTime / 160) % 4 + 1;
   const key = `${index}:${direction}:${seated ? 1 : 0}:${pose}:${danceFrame}`;
   let sprite = sprites.get(key);
   if (!sprite) {
@@ -367,4 +380,5 @@ export function drawAvatar(
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(sprite, Math.round(x - 40 * scale), Math.round(y - 72 * scale), 80 * scale, 80 * scale);
   ctx.restore();
+  return -1;
 }

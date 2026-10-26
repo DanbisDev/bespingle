@@ -61,6 +61,7 @@ async function client(name, avatar) {
     window.__screens = [];
     navigator.mediaDevices.getDisplayMedia = async () => {
       if (window.__cancelScreen) { window.__cancelScreen = false; throw new DOMException('Cancelled', 'NotAllowedError'); }
+      if (window.__failScreen) { window.__failScreen = false; throw new DOMException('Screen capture failed.', 'NotReadableError'); }
       const canvas = document.createElement('canvas');
       canvas.width = 1280; canvas.height = 720;
       const ctx = canvas.getContext('2d');
@@ -73,7 +74,14 @@ async function client(name, avatar) {
       return stream;
     };
     const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function(data) { if (this.url.endsWith('/ws')) window.__wire.push(JSON.parse(data)); return send.call(this, data); };
+    WebSocket.prototype.send = function(data) {
+      if (this.url.endsWith('/ws')) {
+        if (window.__socket !== this) this.addEventListener('message', (event) => { const message = JSON.parse(event.data); if (message.type === 'welcome') window.__selfId = message.selfId; });
+        window.__socket = this;
+        window.__wire.push(JSON.parse(data));
+      }
+      return send.call(this, data);
+    };
   });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(`${name}: ${error.message}`));
@@ -207,6 +215,25 @@ try {
   await alice.screenshot({ path: `${output}/02-game-area.png`, fullPage: true });
   console.log('Full-window night layout, resize, and wheel zoom passed', { zoomBefore, zoomIn, zoomOut });
 
+  // A signal addressed to oneself is rejected by the server: the error #11 is
+  // about. A signal to an absent peer is dropped silently, so it cannot be used.
+  const rejectSignal = () => alice.evaluate(() => window.__socket.send(JSON.stringify({ type: 'signal', to: window.__selfId, sessionId: 'smoke', candidate: { candidate: '' } })));
+  const banner = alice.locator('.inline-error').filter({ hasText: 'signaling requires two participants on the same carpet' });
+  await rejectSignal();
+  await banner.waitFor();
+  const shownAt = Date.now();
+  await banner.waitFor({ state: 'hidden', timeout: 8000 });
+  const expiredAfter = Date.now() - shownAt;
+  assert(expiredAfter >= 4500, `Server errors stay up for five seconds (${expiredAfter}ms)`);
+  await rejectSignal();
+  await banner.waitFor();
+  const dismiss = banner.getByRole('button', { name: 'Dismiss error', exact: true });
+  await dismiss.focus();
+  await alice.keyboard.press('Enter');
+  await banner.waitFor({ state: 'hidden', timeout: 1000 });
+  assert.equal(await alice.locator('.inline-error').count(), 0, 'A dismissed server error leaves no banner');
+  console.log('Server errors expire after five seconds and close from the keyboard', { expiredAfter });
+
   // Straight walk to the middle carpet, stopping as soon as the prompt opens.
   await alice.bringToFront();
   await alice.locator('[data-testid="game-canvas"]').focus();
@@ -238,7 +265,7 @@ try {
   await alice.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 2);
   await alice.getByTestId('video-peer').locator('.select-video').click();
   await alice.locator('.expanded .is-selected.is-speaking').waitFor();
-  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
   await alice.screenshot({ path: `${output}/speaking-highlight.png`, fullPage: true });
   for (const page of [alice, bob]) await page.evaluate(() => window.__setVoice(0));
   for (const page of [alice, bob]) await page.waitForFunction(() => document.querySelectorAll('.is-speaking').length === 0);
@@ -291,7 +318,7 @@ try {
     assert(result.capture.some((track) => track.kind === 'video' && track.settings.width === 1280 && track.settings.height === 720 && track.settings.frameRate === 30), 'Capture requests 720p30');
   }
   await alice.screenshot({ path: `${output}/04-direct-call.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).click();
+  await alice.getByRole('button', { name: 'Expand', exact: true }).click();
   const equalTiles = await alice.locator('.expanded .video-tile').evaluateAll((tiles) => tiles.map((tile) => { const r = tile.getBoundingClientRect(); return { width: r.width, height: r.height }; }));
   assert.equal(await alice.locator('.is-selected').count(), 0, 'Expand opens an unpinned gallery');
   assert(equalTiles.every((tile) => tile.width > 500 && tile.height > 300 && Math.abs(tile.width - equalTiles[0].width) < 1 && Math.abs(tile.height - equalTiles[0].height) < 1), 'Unpinned cameras share the main view equally');
@@ -321,7 +348,50 @@ try {
   assert(await alice.getByTestId('video-self').evaluate((tile) => { const r = tile.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height > 200; }), 'Selected video fits a mobile viewport');
   await alice.setViewportSize({ width: 1440, height: 900 });
   await alice.screenshot({ path: `${output}/05-expanded-videos.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
+
+  // Side by side keeps the game playable beside the enlarged gallery.
+  await alice.getByRole('button', { name: 'Side by side', exact: true }).click();
+  await alice.locator('.call-strip.split .gallery').waitFor();
+  const box = (selector) => alice.locator(selector).evaluate((node) => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }; });
+  const [splitGallery, splitGame] = [await box('.split .video-grid'), await box('[data-testid="game-canvas"]')];
+  assert(splitGallery.width > 300 && splitGallery.height > 300 && splitGame.width > 300 && splitGame.height > 300, 'Split shows the gallery and the game together');
+  assert(splitGallery.right <= splitGame.left, 'The gallery sits left of the game without overlapping it');
+  const splitStart = await position(alice);
+  await go(alice, splitStart.x, splitStart.y - tileSize);
+  assert.equal((await position(alice)).y, splitStart.y - tileSize, 'The avatar walks while the videos are enlarged');
+  await go(alice, splitStart.x, splitStart.y);
+  await alice.getByTestId('video-peer').locator('.select-video').click();
+  assert(await alice.getByTestId('video-peer').evaluate((tile) => tile.classList.contains('is-selected')), 'Clicking a tile pins it inside split');
+  await alice.getByTestId('video-peer').locator('.select-video').click();
+  await alice.locator('.call-strip.split .gallery').waitFor();
+  assert.equal(await alice.locator('.is-selected').count(), 0, 'Clicking the pinned tile unpins it without leaving split');
+  const divider = alice.getByRole('separator', { name: 'Resize conversation videos', exact: true });
+  const splitWidth = () => alice.locator('.call-strip.split').evaluate((node) => node.getBoundingClientRect().width);
+  const widthBefore = await splitWidth();
+  const resting = await position(alice);
+  await divider.focus();
+  await alice.keyboard.press('ArrowRight');
+  assert.equal(await divider.getAttribute('aria-valuenow'), '55', 'ArrowRight widens the videos by five percent');
+  assert(await splitWidth() > widthBefore + 50, 'The video column grows');
+  assert.equal(await alice.evaluate(() => localStorage.getItem('bespingle_split_width')), '55', 'The divider width is remembered');
+  await alice.keyboard.press('Escape');
+  await alice.waitForTimeout(300);
+  assert.deepEqual(await position(alice), resting, 'Keys on the divider do not move the avatar');
+  assert.equal(await alice.locator('.call-strip.split').count(), 1, 'Escape does not leave split');
+  await alice.screenshot({ path: `${output}/05b-split-view.png`, fullPage: true });
+  await alice.getByRole('button', { name: 'Expand', exact: true }).click();
+  await alice.locator('.call-strip.expanded').waitFor();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
+  await alice.locator('.call-strip.split').waitFor();
+  await alice.setViewportSize({ width: 390, height: 844 });
+  const [stackedGallery, stackedGame] = [await box('.split .video-grid'), await box('[data-testid="game-canvas"]')];
+  assert(stackedGallery.bottom <= stackedGame.top && stackedGame.height > 50 && await divider.isHidden(), 'Narrow split stacks the videos above the game');
+  assert(await alice.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Narrow split has no horizontal scroll');
+  await alice.setViewportSize({ width: 1440, height: 900 });
+  await alice.getByRole('button', { name: 'Back to strip', exact: true }).click();
+  await alice.locator('.call-strip.split').waitFor({ state: 'detached' });
+  console.log('Side by side passed: playable game, pin and unpin, keyboard resize, Escape ignored, full and back, narrow stacking');
 
   // Separate screen tracks must arrive alongside the camera and microphone.
   const beforeSharing = await captureState(alice);
@@ -332,7 +402,7 @@ try {
   await bob.getByRole('button', { name: 'Share screen', exact: true }).click();
   await alice.getByTestId('screen-peer').waitFor();
   await alice.waitForFunction(() => document.querySelector('[data-testid="screen-peer"] video')?.currentTime > 0);
-  await alice.getByRole('button', { name: 'Enlarge conversation videos', exact: true }).first().click();
+  await alice.getByRole('button', { name: 'Expand', exact: true }).first().click();
   const tileBounds = await alice.locator('.expanded .video-tile').evaluateAll((tiles) => tiles.map((tile) => { const r = tile.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; }));
   for (let i = 0; i < tileBounds.length; i++) for (let j = i + 1; j < tileBounds.length; j++) {
     const a = tileBounds[i], b = tileBounds[j];
@@ -350,7 +420,7 @@ try {
   await alice.setViewportSize({ width: 1440, height: 900 });
   await alice.getByTestId('screen-peer').locator('.select-video').click();
   await alice.screenshot({ path: `${output}/screen-sharing.png`, fullPage: true });
-  await alice.getByRole('button', { name: 'Return to game', exact: true }).click();
+  await alice.getByRole('button', { name: 'Back to game', exact: true }).click();
   await alice.getByRole('button', { name: 'Stop sharing screen', exact: true }).click();
   await bob.getByTestId('screen-peer').waitFor({ state: 'detached' });
   assert(await alice.evaluate(() => window.__screens.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'))));
@@ -367,6 +437,21 @@ try {
   await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
   await alice.waitForFunction(() => !document.querySelector('[aria-label="Share screen"]').disabled);
   assert.equal(await alice.getByTestId('screen-self').count(), 0, 'Cancelling capture does not start sharing');
+  // A device error seen in a device dialog does not follow into the banner.
+  await alice.evaluate(() => { window.__failScreen = true; });
+  await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
+  const deviceBanner = alice.locator('.inline-error').filter({ hasText: 'Screen capture failed.' });
+  await deviceBanner.waitFor();
+  await alice.getByRole('button', { name: 'Video settings', exact: true }).click();
+  const videoDialog = alice.getByRole('dialog', { name: 'Video settings' });
+  await videoDialog.locator('.form-error').filter({ hasText: 'Screen capture failed.' }).waitFor();
+  assert.equal(await deviceBanner.count(), 0, 'An open video settings dialog keeps its device error out of the banner');
+  await alice.evaluate(() => { window.__bannerSeen = false; new MutationObserver(() => { if (document.querySelector('.inline-error')) window.__bannerSeen = true; }).observe(document.body, { childList: true, subtree: true }); });
+  await videoDialog.getByRole('button', { name: 'Done', exact: false }).click();
+  await videoDialog.waitFor({ state: 'detached' });
+  await alice.waitForTimeout(200);
+  assert.equal(await alice.locator('.inline-error').count(), 0, 'Closing video settings leaves no device error in the banner');
+  assert.equal(await alice.evaluate(() => window.__bannerSeen), false, 'The device error never reaches the banner as video settings closes');
   await alice.getByRole('button', { name: 'Share screen', exact: true }).click();
   await bob.getByTestId('screen-peer').waitFor();
   console.log('Concurrent screen shares, received frames, preserved devices, explicit stop, browser stop, and cancellation passed');
@@ -473,6 +558,7 @@ try {
   assert(wire.types.every((type) => ['join', 'move', 'media', 'profile', 'signal'].includes(type)));
   assert(wire.rtcConfig.iceServers.every((server) => JSON.stringify(server.urls).includes('stun:') && !JSON.stringify(server.urls).includes('turn:')));
   // Leaving the game, rather than a carpet, ends every capture and clears the choice.
+  const lastTile = await position(alice);
   await alice.getByRole('button', { name: 'Leave office', exact: true }).click();
   await alice.getByRole('button', { name: 'Enter the office', exact: true }).waitFor();
   await alice.waitForFunction(() => window.__pcs.every((pc) => pc.connectionState === 'closed') && window.__streams.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended')));
@@ -481,13 +567,14 @@ try {
   await alice.getByLabel('Your display name').fill('Alice Updated');
   await alice.getByRole('button', { name: 'Enter the office', exact: true }).click();
   await alice.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
+  // Entering from the form returns to the last tile, on the carpet, so it asks at once.
+  await alice.waitForFunction(({ x, y }) => {
+    const canvas = document.querySelector('[data-testid="game-canvas"]');
+    return Number(canvas.dataset.x) === x && Number(canvas.dataset.y) === y;
+  }, lastTile, { timeout: 2500 });
+  await choose(alice, 'Neither');
   await expectDevices(alice, false, false);
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'A new game starts with both devices off');
-  await alice.locator('[data-testid="game-canvas"]').focus();
-  await alice.keyboard.down('w');
-  await alice.getByRole('dialog').waitFor();
-  await alice.keyboard.up('w');
-  await choose(alice, 'Neither');
   assert.equal((await captureState(alice)).requests.length, requestsBeforeRejoin, 'The next game asks again and Neither opens no devices');
 
   await alice.evaluate(() => { window.__holdScreen = true; });

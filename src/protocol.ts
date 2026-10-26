@@ -32,9 +32,24 @@ export type ChatMessage = {
 export type ScrimbaGuess = { emojis?: string[]; marks: ('correct' | 'present' | 'absent')[] };
 export type ScrimbaPlayer = { id: string; name: string; guesses: ScrimbaGuess[]; done: boolean; won: boolean };
 export type ScrimbaState = { type: 'scrimba-state'; expiresAt: number; id: string; carpetId: string; players: ScrimbaPlayer[]; solution?: string[] };
+/**
+ * x, y and facing ask for a tile, all three or none. The server places the
+ * person there only if it is free; otherwise it searches from it, or places
+ * them as a fresh join when the request is unusable.
+ */
+export type Join = {
+  type: 'join';
+  name: string;
+  avatar: number;
+  customAvatar?: string;
+  x?: number;
+  y?: number;
+  facing?: 'up' | 'down' | 'left' | 'right';
+};
 
 export type ServerMessage =
-  | { type: 'welcome'; selfId: string; players: Player[]; serverNow: number }
+  /** build is absent when the server is not serving a built frontend; compare it with pageBuild(). */
+  | { type: 'welcome'; selfId: string; build?: string; players: Player[]; serverNow: number }
   | { type: 'state'; players: Player[]; serverNow: number }
   | MoveResult
   | ChatMessage

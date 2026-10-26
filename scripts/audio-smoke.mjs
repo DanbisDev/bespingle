@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 const output = fileURLToPath(new URL('../test-results/audio/', import.meta.url));
 await mkdir(output, { recursive: true });
 
+// Run straight after `npm run dev`, the stack may still be starting: wait until the app and its office answer.
+const app = process.env.BESPINGLE_URL || 'http://localhost:5555';
+for (const deadline = Date.now() + 120000; ;) {
+  try { if ((await fetch(new URL('/api/health', app))).ok) break; } catch { /* Not listening yet. */ }
+  assert(Date.now() < deadline, `${app} did not answer within two minutes: is \`npm run dev\` running?`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || undefined,
   headless: true,
@@ -29,7 +37,7 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(process.env.BESPINGLE_URL || 'http://localhost:5555');
+  await page.goto(app);
   await page.getByLabel('Your display name').fill('Audio check');
   await page.getByRole('button', { name: 'Enter the office', exact: true }).click();
   await page.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
@@ -215,7 +223,9 @@ try {
     const current = await context.newPage();
     current.on('pageerror', (error) => errors.push(error.message));
     if (init) await current.addInitScript(init, arg);
-    await current.goto(process.env.BESPINGLE_URL || 'http://localhost:5555');
+    // Each stands in for another browser, so none inherits the last page's tile.
+    await current.addInitScript(() => localStorage.removeItem('bespingle_session'));
+    await current.goto(app);
     await current.getByLabel('Your display name').fill(name);
     await current.getByRole('button', { name: 'Enter the office', exact: true }).click();
     await current.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
@@ -260,7 +270,8 @@ try {
   await plain.getByRole('button', { name: 'Leave office', exact: true }).click();
   await plain.close();
 
-  // Without AudioWorklet or WebAssembly, Strong is unavailable.
+  // Without AudioWorklet or WebAssembly, Strong is unavailable, even when Strong was the remembered choice.
+  assert.equal(await page.evaluate(() => localStorage.getItem('bespingle_noise_level')), 'strong');
   for (const missing of ['AudioWorkletNode', 'WebAssembly']) {
     const lacking = await enter(`No ${missing}`, (missing) => { delete window[missing]; }, missing);
     assert(await lacking.getByRole('radio', { name: 'Strong', exact: true }).isDisabled(), `Strong is disabled with no ${missing}`);
@@ -272,8 +283,27 @@ try {
     assert.equal(await lacking.evaluate(() => window.__captures[0].constraints.audio.noiseSuppression), true, `Standard captures with built-in suppression with no ${missing}`);
     await lacking.close();
   }
+  // The level is remembered across a reload, and a newly enabled microphone uses it.
+  const remembered = await enter('Remembered level');
+  await remembered.getByRole('radio', { name: 'Off', exact: true }).click();
+  assert(await remembered.getByRole('radio', { name: 'Off', exact: true }).isChecked());
+  assert.equal(await remembered.getByText('until you reload', { exact: false }).count(), 0, 'The dialog no longer says the choice lasts until reload');
+  await remembered.getByText('Your noise choice is remembered in this browser.', { exact: false }).waitFor();
+  await remembered.getByRole('button', { name: 'Done', exact: false }).click();
+  await remembered.reload();
+  await remembered.getByLabel('Your display name').fill('Remembered level');
+  await remembered.getByRole('button', { name: 'Enter the office', exact: true }).click();
+  await remembered.getByRole('button', { name: 'Microphone settings', exact: true }).click();
+  assert(await remembered.getByRole('radio', { name: 'Off', exact: true }).isChecked(), 'The noise level survives a reload');
+  await remembered.getByRole('button', { name: 'Done', exact: false }).click();
+  await turnOn(remembered);
+  assert.equal(await remembered.evaluate(() => window.__captures[0].constraints.audio.noiseSuppression), false, 'The remembered Off captures without built-in suppression');
+  assert.equal(await remembered.evaluate(() => window.__filterContexts.length), 0, 'The remembered Off starts no filter');
+  await remembered.getByRole('button', { name: 'Leave office', exact: true }).click();
+  await remembered.close();
+
   assert.deepEqual(errors, []);
-  console.log('PASS: real browser noise levels: Strong default reached on the first mic-on, ⋯ settings opener by click and keyboard, choices with the mic off, capture constraints per level, Strong publishes the filter output, live switching without recapture, speaking on Strong, mid-call and startup filter failure fall back to Standard, failure recovery, mute/re-enable, cleanup, and unsupported browsers defaulting to Standard without an alert');
+  console.log('PASS: real browser noise levels: Strong default reached on the first mic-on, ⋯ settings opener by click and keyboard, choices with the mic off, capture constraints per level, Strong publishes the filter output, live switching without recapture, speaking on Strong, mid-call and startup filter failure fall back to Standard, failure recovery, mute/re-enable, cleanup, unsupported browsers defaulting to Standard without an alert, and the level remembered across a reload');
 } finally {
   await browser.close();
 }
