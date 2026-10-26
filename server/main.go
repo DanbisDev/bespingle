@@ -245,6 +245,7 @@ type serverSignal struct {
 type stateMessage struct {
 	Type      string   `json:"type"`
 	SelfID    string   `json:"selfId,omitempty"`
+	Build     string   `json:"build,omitempty"`
 	Players   []player `json:"players"`
 	ServerNow int64    `json:"serverNow"`
 }
@@ -274,8 +275,10 @@ func (c *client) stop() {
 }
 
 type hub struct {
-	scrimba  map[string]*scrimbaGame
-	avatars  *avatarService
+	scrimba map[string]*scrimbaGame
+	avatars *avatarService
+	// build identifies the frontend being served; empty when there is none.
+	build    string
 	mu       sync.Mutex
 	now      func() time.Time
 	world    world
@@ -445,6 +448,27 @@ func (h *hub) spawnLocked() (point, bool) {
 	if !valid || !h.world.canMove(start, start) {
 		return point{}, false
 	}
+	return h.nearestFreeLocked(start)
+}
+
+// requestedTile reads the tile and facing a join asks for. Anything doubtful
+// is no request rather than an error: a page may remember a tile from before
+// a map change.
+func (w world) requestedTile(x, y, facing json.RawMessage) (point, string, bool) {
+	var px, py *float64
+	var f *string
+	if json.Unmarshal(x, &px) != nil || json.Unmarshal(y, &py) != nil || json.Unmarshal(facing, &f) != nil || px == nil || py == nil || f == nil || !validFacing(*f) {
+		return point{}, "", false
+	}
+	tile, onGrid := w.gridPoint(point{X: *px, Y: *py})
+	if !onGrid || !w.canMove(tile, tile) {
+		return point{}, "", false
+	}
+	return tile, *f, true
+}
+
+// nearestFreeLocked searches only the area reachable from start.
+func (h *hub) nearestFreeLocked(start point) (point, bool) {
 	queue := []point{start}
 	visited := map[point]bool{start: true}
 	// Breadth-first search finds the nearest reachable free tile, with a stable
@@ -546,16 +570,29 @@ func (h *hub) handle(c *client, data []byte) error {
 	}
 	switch envelope.Type {
 	case "join", "profile":
-		var msg struct {
+		type profileMessage struct {
 			Type         string `json:"type"`
 			Name         string `json:"name"`
 			Avatar       *int   `json:"avatar"`
 			CustomAvatar string `json:"customAvatar,omitempty"`
 		}
-		if err := strictDecode(data, &msg); err != nil {
+		// Only a join may ask for a tile; a profile carrying one is refused.
+		var msg struct {
+			profileMessage
+			X      json.RawMessage `json:"x"`
+			Y      json.RawMessage `json:"y"`
+			Facing json.RawMessage `json:"facing"`
+		}
+		var err error
+		if envelope.Type == "join" {
+			err = strictDecode(data, &msg)
+		} else {
+			err = strictDecode(data, &msg.profileMessage)
+		}
+		if err != nil {
 			return errors.New("invalid profile message")
 		}
-		if msg.CustomAvatar != "" && !avatarIDPattern.MatchString(msg.CustomAvatar) {
+		if msg.CustomAvatar != "" && !validAvatarRef(msg.CustomAvatar) {
 			return errors.New("invalid custom avatar")
 		}
 		name, err := validateProfile(msg.Name, msg.Avatar)
@@ -566,7 +603,16 @@ func (h *hub) handle(c *client, data []byte) error {
 			if c.player.ID != "" {
 				return errors.New("already joined")
 			}
-			spawn, available := h.spawnLocked()
+			// The server decides: a usable requested tile only moves where
+			// the search for a free tile starts.
+			spawn, available := point{}, false
+			tile, facing, requested := h.world.requestedTile(msg.X, msg.Y, msg.Facing)
+			if requested {
+				spawn, available = h.nearestFreeLocked(tile)
+			} else {
+				spawn, available = h.spawnLocked()
+				facing = "down"
+			}
 			if !available {
 				return errors.New("the office has no free reachable tile")
 			}
@@ -574,9 +620,9 @@ func (h *hub) handle(c *client, data []byte) error {
 			if _, err := rand.Read(id); err != nil {
 				return errors.New("could not create participant ID")
 			}
-			c.player = player{ID: hex.EncodeToString(id), Name: name, Avatar: *msg.Avatar, CustomAvatar: msg.CustomAvatar, X: spawn.X, Y: spawn.Y, Facing: "down", CarpetID: h.world.carpetAt(spawn.X, spawn.Y), Seated: h.world.isSeated(spawn.X, spawn.Y)}
+			c.player = player{ID: hex.EncodeToString(id), Name: name, Avatar: *msg.Avatar, CustomAvatar: msg.CustomAvatar, X: spawn.X, Y: spawn.Y, Facing: facing, CarpetID: h.world.carpetAt(spawn.X, spawn.Y), Seated: h.world.isSeated(spawn.X, spawn.Y)}
 			h.clients[c.player.ID] = c
-			h.enqueueLocked(c, marshal(stateMessage{Type: "welcome", SelfID: c.player.ID, Players: h.playersLocked(), ServerNow: h.now().UnixMilli()}))
+			h.enqueueLocked(c, marshal(stateMessage{Type: "welcome", SelfID: c.player.ID, Build: h.build, Players: h.playersLocked(), ServerNow: h.now().UnixMilli()}))
 		} else {
 			c.player.Name, c.player.Avatar, c.player.CustomAvatar = name, *msg.Avatar, msg.CustomAvatar
 		}
@@ -905,8 +951,14 @@ func (c *client) writeLoop() {
 // cached indefinitely; HTML must be revalidated to discover each deployment.
 var hashedAssetName = regexp.MustCompile(`-[A-Za-z0-9_-]{8,}\.[^.]+$`)
 
+// The build stamps its identity into index.html (see vite.config.ts), where
+// the page reads it too, so both always name the same build.
+var buildMeta = regexp.MustCompile(`<meta name="bespingle-build" content="([0-9a-f]{16})"`)
+
 type frontendHandler struct {
 	root *os.Root
+	// build is empty for an index.html without an identity.
+	build string
 }
 
 func newFrontendHandler(directory string) (*frontendHandler, error) {
@@ -922,7 +974,16 @@ func newFrontendHandler(directory string) (*frontendHandler, error) {
 		}
 		return nil, fmt.Errorf("read STATIC_DIR/index.html: %w", err)
 	}
-	return &frontendHandler{root: root}, nil
+	html, err := root.ReadFile("index.html")
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("read STATIC_DIR/index.html: %w", err)
+	}
+	f := &frontendHandler{root: root}
+	if match := buildMeta.FindSubmatch(html); match != nil {
+		f.build = string(match[1])
+	}
+	return f, nil
 }
 
 func (f *frontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1050,6 +1111,7 @@ func main() {
 	h.avatars = newAvatarService(store)
 	handler := h.handler()
 	if frontend != nil {
+		h.build = frontend.build
 		handler = h.handlerWithFrontend(frontend)
 	}
 	port := os.Getenv("PORT")

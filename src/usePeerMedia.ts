@@ -4,12 +4,14 @@ import type { Player } from './world';
 import type { Send, Signal } from './protocol';
 import { createCameraBackground } from './cameraBackground';
 import type { CameraBackground, CameraProcessor } from './cameraBackground';
-import { encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
+import { carrySteps, encodingFor, loadHeadroom, qualityTarget, readVideoQuality, saveVideoQuality } from './videoQuality';
 import { currentLoad, subscribeLoad, watchEncoders } from './deviceLoad';
 import { LoadStepper } from './loadSteps';
-import type { QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
+import type { LadderInput, LadderSections, QualityTarget, SenderTarget, VideoQuality } from './videoQuality';
 import { createNoiseFilter, noiseFilterSupported } from './noiseFilter';
 import type { NoiseFilter } from './noiseFilter';
+import { readBackground, readBackgroundImage, readNoiseLevel, saveBackground, saveBackgroundImage, saveNoiseLevel } from './mediaChoices';
+import { pageDevices, recordDevices } from './session';
 
 // Off sends the microphone untouched, Standard uses the browser's built-in noise
 // suppression, and Strong adds the RNNoise filter on top of it.
@@ -47,6 +49,18 @@ async function capSender(sender: RTCRtpSender, target: SenderTarget) {
   await sender.setParameters(parameters);
 }
 
+const sameLadder = (a: LadderInput, b: LadderInput) => (Object.keys(a) as (keyof LadderInput)[]).every((key) => a[key] === b[key]);
+
+// Where the Permissions API cannot answer, the permission counts as not granted.
+async function permitted(name: 'camera' | 'microphone') {
+  try { return (await navigator.permissions.query({ name: name as PermissionName })).state === 'granted'; } catch { return false; }
+}
+
+function leftOffNote(mic: boolean, camera: boolean) {
+  if (mic && camera) return 'Your microphone and camera were left off because the browser needs your permission to use them. Turn them on to allow them.';
+  return `Your ${mic ? 'microphone' : 'camera'} was left off because the browser needs your permission to use it. Turn it on to allow it.`;
+}
+
 // Discovery only. There are deliberately no TURN URLs or server media endpoints.
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }],
@@ -57,6 +71,7 @@ export function usePeerMedia(
   players: Player[],
   send: Send,
   signalHandler: MutableRefObject<(signal: Signal) => void>,
+  rejoined = false,
 ) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteMedia, setRemoteMedia] = useState<Record<string, RemoteMedia>>({});
@@ -65,6 +80,7 @@ export function usePeerMedia(
   const screen = useRef<MediaStream | null>(null);
   const screenRequest = useRef(0);
   const [error, setError] = useState('');
+  const clearError = useCallback(() => setError(''), []);
   const [busy, setBusy] = useState(false);
   const [hasChosenDevices, setHasChosenDevices] = useState(false);
   const peers = useRef(new Map<string, Peer>());
@@ -72,8 +88,12 @@ export function usePeerMedia(
   const capture = useRef<MediaStream | null>(null);
   const standardSupported = !!navigator.mediaDevices?.getSupportedConstraints().noiseSuppression;
   const strongSupported = noiseFilterSupported();
-  // Each visit starts at Strong where the browser can run the filter, and is not remembered.
-  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>(strongSupported ? 'strong' : 'standard');
+  // The remembered level, else Strong where the browser can run the filter. A remembered Strong
+  // the browser cannot run starts at Standard, as the default does.
+  const [noiseLevel, setNoiseLevel] = useState<NoiseLevel>(() => {
+    const remembered = readNoiseLevel() ?? 'strong';
+    return remembered === 'strong' && !strongSupported ? 'standard' : remembered;
+  });
   const levelChoice = useRef<NoiseLevel>(noiseLevel);
   const levelRequest = useRef(0);
   const [levelBusy, setLevelBusy] = useState(false);
@@ -82,27 +102,51 @@ export function usePeerMedia(
   const filter = useRef<ActiveFilter | null>(null);
   const filterStarting = useRef<AbortController | null>(null);
   const processor = useRef<CameraProcessor | null>(null);
-  const [background, setBackground] = useState<CameraBackground>('none');
-  const backgroundChoice = useRef<CameraBackground>('none');
+  const [background, setBackground] = useState<CameraBackground>(readBackground);
+  const backgroundChoice = useRef<CameraBackground>(background);
   const backgroundImage = useRef<File | undefined>(undefined);
+  // A remembered custom background needs its image read back from storage first. If it cannot
+  // be, the background becomes Blur, so the person's surroundings stay hidden.
+  const imageRestore = useRef<Promise<void> | null>(null);
+  const restoreImage = useCallback(() => {
+    imageRestore.current ??= backgroundChoice.current !== 'custom' ? Promise.resolve() : readBackgroundImage().then(
+      (image) => { backgroundImage.current ??= image; },
+      () => {
+        if (backgroundChoice.current !== 'custom' || backgroundImage.current) return;
+        backgroundChoice.current = 'blur'; setBackground('blur');
+      });
+    return imageRestore.current;
+  }, []);
+  useEffect(() => { void restoreImage(); }, [restoreImage]);
   const processing = useRef<AbortController | null>(null);
   const [quality, setQuality] = useState<VideoQuality>(readVideoQuality);
   const qualityChoice = useRef(quality);
   qualityChoice.current = quality;
   const [cameraOn, setCameraOn] = useState(false);
   const participants = self?.carpetId ? players.filter((player) => player.carpetId === self.carpetId).length : 1;
-  // Further step-downs for device load, below what the count alone sets.
-  const [loadSteps, setLoadSteps] = useState(0);
-  const headroom = loadHeadroom({ participants, quality, sharing: !!screenStream });
-  const room = useRef(headroom);
-  room.current = headroom;
-  const target = useRef<QualityTarget>(qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) }));
+  // Bypassing Strong leaves only the built-in suppression, so the noise rung
+  // counts only while that is known to be on. Without it, a bypass would send
+  // the microphone unsuppressed, and noise filtering never steps down to Off.
+  const ladder: LadderInput = { participants, quality, sharing: !!screenStream, background: background !== 'none' && cameraOn, noise: noiseLevel === 'strong' && filtering && standardSupported && noiseActive === true };
+  // Further step-downs for device load, below what the count alone sets, and
+  // the ladder they were counted on.
+  const [load, setLoad] = useState<{ steps: number; ladder: LadderInput }>({ steps: 0, ladder });
+  const headroom = loadHeadroom(ladder);
+  const loadSteps = Math.min(carrySteps(load.steps, load.ladder, ladder), headroom);
+  const ceiling = qualityTarget({ ...ladder, loadSteps });
+  const policy = useRef({ load, ladder });
+  policy.current = { load, ladder };
+  const target = useRef<QualityTarget>(ceiling);
   const context = useRef({ self, players });
   context.current = { self, players };
   const epoch = useRef(0);
   const request = useRef(0);
   const activeCarpet = self?.carpetId ?? '';
   const activeSelf = self?.id ?? '';
+  const rejoin = useRef(rejoined);
+  rejoin.current = rejoined;
+  // Someone rejoining has already answered the device prompt if this session ever did.
+  const answeredBefore = rejoined && !!activeSelf && pageDevices() !== null;
 
   const stopFilter = useCallback(() => {
     filterStarting.current?.abort(); filterStarting.current = null;
@@ -358,7 +402,14 @@ export function usePeerMedia(
   // the outgoing video senders and turns its level into load steps.
   useEffect(() => {
     const stepper = new LoadStepper();
-    const update = () => setLoadSteps(stepper.update(currentLoad(), performance.now(), room.current));
+    let counted = policy.current.ladder;
+    const update = () => {
+      const { ladder } = policy.current;
+      stepper.steps = carrySteps(stepper.steps, counted, ladder);
+      counted = ladder;
+      const steps = stepper.update(currentLoad(), performance.now(), loadHeadroom(ladder));
+      setLoad((current) => current.steps === steps && sameLadder(current.ladder, ladder) ? current : { steps, ladder });
+    };
     const unsubscribe = subscribeLoad(update);
     const unwatch = watchEncoders(() => [...peers.current.values()].flatMap(({ pc }) => (
       pc.connectionState === 'connected' ? pc.getTransceivers().slice(1, 3).flatMap(({ sender }) => sender.track ? [sender] : []) : []
@@ -369,12 +420,26 @@ export function usePeerMedia(
   }, []);
 
   // Every client sees the same count, so a carpet steps down together.
+  const senderCaps = JSON.stringify([ceiling.camera, ceiling.screen]);
   useEffect(() => {
-    const next = qualityTarget({ participants, quality, loadSteps: Math.min(loadSteps, headroom) });
-    if (JSON.stringify(next) === JSON.stringify(target.current)) return;
-    target.current = next;
+    if (senderCaps === JSON.stringify([target.current.camera, target.current.screen])) return;
+    target.current = ceiling;
     for (const peer of peers.current.values()) applyQuality(peer);
-  }, [participants, quality, loadSteps, headroom, applyQuality]);
+  }, [senderCaps, applyQuality]);
+
+  // The filters follow their ceilings in place. A new processor or filter is
+  // published as a new local stream, so it is brought to the ceiling too.
+  useEffect(() => {
+    processor.current?.setRung(ceiling.background);
+    filter.current?.setBypassed(ceiling.noise === 'standard');
+  }, [ceiling.background, ceiling.noise, localStream]);
+
+  // The ceiling a filter about to start would be held to, so it starts there.
+  const ceilingWith = useCallback((sections: Partial<LadderSections>) => {
+    const { load, ladder } = policy.current;
+    const next = { ...ladder, ...sections };
+    return qualityTarget({ ...next, loadSteps: Math.min(carrySteps(load.steps, load.ladder, next), loadHeadroom(next)) });
+  }, []);
 
   const chooseQuality = useCallback((choice: VideoQuality) => {
     qualityChoice.current = choice;
@@ -393,6 +458,7 @@ export function usePeerMedia(
     const controller = new AbortController(); filterStarting.current = controller;
     let active: ActiveFilter | null = null;
     try {
+      // It starts at its ceiling, and as in the ladder the noise rung counts only where bypassing leaves built-in suppression on.
       const started = await createNoiseFilter(source, (message) => {
         if (!active || filter.current !== active) return;
         filter.current = null;
@@ -402,11 +468,11 @@ export function usePeerMedia(
         if (source.readyState !== 'live') return;
         levelChoice.current = 'standard'; setNoiseLevel('standard');
         setError(strongStopped(message));
-      }, controller.signal);
+      }, controller.signal, { bypassed: ceilingWith({ noise: standardSupported && source.getSettings().noiseSuppression === true }).noise === 'standard' });
       active = { ...started, source };
       return active;
     } finally { if (filterStarting.current === controller) filterStarting.current = null; }
-  }, [publishCapture, strongStopped, syncSenders]);
+  }, [ceilingWith, publishCapture, standardSupported, strongStopped, syncSenders]);
 
   const [whiteboardActive, setWhiteboardActive] = useState(false);
   const whiteboardRef = useRef(false);
@@ -485,7 +551,9 @@ export function usePeerMedia(
     void syncSenders();
   }, [publishCapture, stopScreen, syncSenders]);
 
-  const chooseMedia = useCallback(async (mic: boolean, camera: boolean): Promise<boolean> => {
+  // The device buttons and the prompt record what they choose. A restore does not: it brings
+  // back that choice, possibly only in part, and the choice stands for the next rejoin.
+  const acquire = useCallback(async (mic: boolean, camera: boolean, record: boolean): Promise<boolean> => {
     const playerId = context.current.self?.id;
     if (!playerId) return false;
     const generation = epoch.current;
@@ -545,6 +613,11 @@ export function usePeerMedia(
       }
 
       const cameraTrack = acquired?.getVideoTracks()[0];
+      // A camera enabled before the remembered image is read back waits for it.
+      if (cameraTrack && backgroundChoice.current === 'custom' && !backgroundImage.current) {
+        await restoreImage();
+        if (!isCurrent()) { acquired?.getTracks().forEach((track) => track.stop()); return false; }
+      }
       if (cameraTrack && backgroundChoice.current !== 'none') {
         const controller = new AbortController(); processing.current = controller;
         const next = await createCameraBackground(cameraTrack, backgroundChoice.current, (message) => {
@@ -553,7 +626,7 @@ export function usePeerMedia(
           cameraTrack.stop(); processor.current?.stop(); processor.current = null;
           publishCapture(new MediaStream((capture.current?.getAudioTracks() ?? [])));
           void syncSenders();
-        }, backgroundChoice.current === 'custom' ? backgroundImage.current : undefined, controller.signal);
+        }, backgroundChoice.current === 'custom' ? backgroundImage.current : undefined, controller.signal, { rung: ceilingWith({ background: true }).background });
         if (processing.current === controller) processing.current = null;
         if (!isCurrent()) { next.stop(); acquired?.getTracks().forEach((track) => track.stop()); return false; }
         processor.current = next;
@@ -570,6 +643,7 @@ export function usePeerMedia(
         });
         return false;
       }
+      if (record) recordDevices({ mic, camera });
       setHasChosenDevices(true);
       return true;
     } catch (failure) {
@@ -588,14 +662,37 @@ export function usePeerMedia(
     } finally {
       if (isCurrent()) setBusy(false);
     }
-  }, [publishCapture, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
+  }, [ceilingWith, publishCapture, restoreImage, standardSupported, startFilter, stopFilter, strongStopped, syncSenders]);
+  const chooseMedia = useCallback((mic: boolean, camera: boolean) => acquire(mic, camera, true), [acquire]);
 
-  // The one way to change the noise level: the settings dialog uses it, and so can the app at
-  // runtime, without a user gesture (#3 steps Strong down under device load through here).
+  // After a rejoin's welcome, what was on comes back on, but only where the browser still
+  // grants the permission, so it never raises a request the person did not make. A click
+  // or leaving meanwhile supersedes it.
+  useEffect(() => {
+    const choice = rejoin.current && activeSelf ? pageDevices() : null;
+    if (!choice?.mic && !choice?.camera) return;
+    const generation = epoch.current;
+    const requestId = request.current;
+    const isCurrent = () => generation === epoch.current && requestId === request.current;
+    let live = true;
+    void (async () => {
+      const [mic, camera] = await Promise.all([choice.mic && permitted('microphone'), choice.camera && permitted('camera')]);
+      if (!live || !isCurrent()) return;
+      if ((mic || camera) && !await acquire(mic, camera, false)) return;
+      if (live && (choice.mic !== mic || choice.camera !== camera)) setError(leftOffNote(choice.mic && !mic, choice.camera && !camera));
+    })();
+    return () => { live = false; };
+  }, [activeSelf, acquire]);
+
+  // The one way to change the person's noise level, from the settings dialog. Device load never
+  // comes through here: it holds Strong's filter bypassed in place, below a choice it leaves as is.
   // With the microphone off it only records the choice. With it on, built-in suppression is
   // toggled on the live capture track and each sender's track is replaced in place, so nothing
   // is recaptured or renegotiated. Resolves to the level in effect afterwards.
-  const chooseNoiseLevel = useCallback(async function choose(level: NoiseLevel): Promise<NoiseLevel> {
+  // A level that is recorded or applied is remembered for later visits unless `remember` is false,
+  // which a runtime change should pass. A Strong that falls back to Standard is remembered as Strong,
+  // so a filter that failed once is tried again next visit.
+  const chooseNoiseLevel = useCallback(async function choose(level: NoiseLevel, remember = true): Promise<NoiseLevel> {
     if (level === 'strong' && !strongSupported) return levelChoice.current;
     const generation = epoch.current;
     const requestId = ++levelRequest.current;
@@ -603,6 +700,7 @@ export function usePeerMedia(
     if (!track) {
       // As the latest request, this also clears a busy state left by a change it overtook.
       levelChoice.current = level; setNoiseLevel(level); setLevelBusy(false);
+      if (remember) saveNoiseLevel(level);
       return level;
     }
     filterStarting.current?.abort();
@@ -611,7 +709,7 @@ export function usePeerMedia(
     const isCurrent = () => isLatest() && !!capture.current?.getAudioTracks().includes(track) && track.readyState === 'live';
     // A change overtaken only by the microphone still stands: it is recorded with the microphone
     // off, or applied to the microphone that replaced this one.
-    const stale = () => isLatest() ? choose(level) : levelChoice.current;
+    const stale = () => isLatest() ? choose(level, remember) : levelChoice.current;
     setLevelBusy(true); setError('');
     let next: ActiveFilter | null = null;
     try {
@@ -631,6 +729,7 @@ export function usePeerMedia(
       const effective: NoiseLevel = level === 'strong' && !next ? 'standard' : level;
       filter.current = next;
       levelChoice.current = effective; setNoiseLevel(effective);
+      if (remember) saveNoiseLevel(level);
       publishCapture(capture.current);
       await syncSenders();
       if (previous !== next) previous?.stop();
@@ -662,7 +761,7 @@ export function usePeerMedia(
           cameraTrack.stop(); processor.current?.stop(); processor.current = null;
           publishCapture(new MediaStream(capture.current?.getAudioTracks() ?? []));
           void syncSenders(); setError(`Camera background stopped. ${message}`);
-        }, choice === 'custom' ? selectedImage : undefined, controller.signal);
+        }, choice === 'custom' ? selectedImage : undefined, controller.signal, { rung: ceilingWith({ background: true }).background });
         if (processing.current === controller) processing.current = null;
       }
       if (!isCurrent()) { next?.stop(); return; }
@@ -670,6 +769,8 @@ export function usePeerMedia(
       const previous = processor.current;
       processor.current = next;
       backgroundChoice.current = choice; setBackground(choice);
+      saveBackground(choice);
+      if (image) void saveBackgroundImage(image);
       publishCapture(capture.current);
       await syncSenders();
       previous?.stop();
@@ -677,7 +778,11 @@ export function usePeerMedia(
       next?.stop();
       if (isCurrent()) setError(`Could not apply camera background. ${failure instanceof Error ? failure.message : 'Please try again.'}`);
     } finally { if (isCurrent()) setBusy(false); }
-  }, [publishCapture, syncSenders]);
+  }, [ceilingWith, publishCapture, syncSenders]);
 
-  return { quality, chooseQuality, cameraOn, noiseLevel, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, busy, hasChosenDevices };
+  // A filter held below the person's choice by the quality policy.
+  const backgroundReduced = ladder.background && ceiling.background > 0;
+  const noiseReduced = ladder.noise && ceiling.noise === 'standard';
+
+  return { quality, chooseQuality, cameraOn, noiseLevel, noiseReduced, backgroundReduced, standardSupported, strongSupported, noiseActive, filtering, levelBusy, chooseNoiseLevel, background, chooseBackground, localStream, screenStream, screenBusy, startScreen, stopScreen, whiteboardActive, startWhiteboard, remoteMedia, chooseMedia, error, clearError, busy, hasChosenDevices: hasChosenDevices || answeredBefore };
 }

@@ -339,6 +339,105 @@ func TestJoinSpawnsOnDistinctNearestReachableTiles(t *testing.T) {
 	}
 }
 
+func joinAt(t *testing.T, h *hub, name string, request map[string]any) (*client, error) {
+	t.Helper()
+	c := &client{send: make(chan []byte, 128), done: make(chan struct{})}
+	msg := map[string]any{"type": "join", "name": name, "avatar": 0}
+	for key, value := range request {
+		msg[key] = value
+	}
+	return c, h.handle(c, marshal(msg))
+}
+
+func TestJoinAtRequestedTile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		request map[string]any
+		x, y    float64
+		facing  string
+	}{
+		{"free tile", map[string]any{"x": 120, "y": 216, "facing": "left"}, 120, 216, "left"},
+		{"wall tile", map[string]any{"x": 312, "y": 72, "facing": "left"}, 72, 360, "down"},
+		{"off the map", map[string]any{"x": 24, "y": 24 + 48*20, "facing": "left"}, 72, 360, "down"},
+		{"before the map", map[string]any{"x": -24, "y": 216, "facing": "left"}, 72, 360, "down"},
+		{"off the grid", map[string]any{"x": 100, "y": 216, "facing": "left"}, 72, 360, "down"},
+		{"no tile", map[string]any{"facing": "left"}, 72, 360, "down"},
+		{"no y", map[string]any{"x": 120, "facing": "left"}, 72, 360, "down"},
+		{"null x", map[string]any{"x": nil, "y": 216, "facing": "left"}, 72, 360, "down"},
+		{"string x", map[string]any{"x": "120", "y": 216, "facing": "left"}, 72, 360, "down"},
+		{"no facing", map[string]any{"x": 120, "y": 216}, 72, 360, "down"},
+		{"invalid facing", map[string]any{"x": 120, "y": 216, "facing": "north"}, 72, 360, "down"},
+		{"numeric facing", map[string]any{"x": 120, "y": 216, "facing": 1}, 72, 360, "down"},
+		{"old-style join", nil, 72, 360, "down"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := testHub(t, testWorld())
+			c, err := joinAt(t, h, "Alice", tc.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := snapshot(h, c)
+			if p.X != tc.x || p.Y != tc.y || p.Facing != tc.facing {
+				t.Fatalf("placed at (%v,%v) facing %q, want (%v,%v) facing %q", p.X, p.Y, p.Facing, tc.x, tc.y, tc.facing)
+			}
+		})
+	}
+	// Carpet and seat follow from the tile the person lands on.
+	h, _ := testHub(t, testWorld())
+	seated, _ := joinAt(t, h, "Alice", map[string]any{"x": 120, "y": 216, "facing": "up"})
+	if p := snapshot(h, seated); p.CarpetID != "a" || !p.Seated {
+		t.Fatalf("requested chair tile: carpet %q seated %v", p.CarpetID, p.Seated)
+	}
+	// A request takes no part in placing later joins without one.
+	if p := snapshot(h, unitClient(t, h, "Bob")); p.X != 72 || p.Y != 360 {
+		t.Fatal("join without a request did not use the spawn tile")
+	}
+}
+
+func TestJoinAtTakenTileSearchesFromIt(t *testing.T) {
+	h, _ := testHub(t, testWorld())
+	first, _ := joinAt(t, h, "Alice", map[string]any{"x": 408, "y": 216, "facing": "up"})
+	second, err := joinAt(t, h, "Bob", map[string]any{"x": 408, "y": 216, "facing": "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := snapshot(h, first); p.X != 408 || p.Y != 216 {
+		t.Fatal("first request did not get its tile")
+	}
+	if p := snapshot(h, second); p.X != 456 || p.Y != 216 || p.Facing != "up" || p.CarpetID != "b" {
+		t.Fatalf("taken tile placed at (%v,%v) facing %q on %q, want the nearest free tile from it", p.X, p.Y, p.Facing, p.CarpetID)
+	}
+
+	// The requested tile's side of the wall is full; the spawn side is not.
+	// A request must not escape into a region its tile cannot reach.
+	w := testWorld()
+	w.Width, w.Height, w.Spawn = 144, 96, point{X: 24, Y: 24}
+	w.Walls = []rect{{X: 48, Y: 0, W: 48, H: 96}}
+	h2, _ := testHub(t, w)
+	for _, y := range []float64{24, 72} {
+		if _, err := joinAt(t, h2, "Right", map[string]any{"x": 120, "y": y, "facing": "down"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := joinAt(t, h2, "Late", map[string]any{"x": 120, "y": 24, "facing": "down"}); err == nil {
+		t.Fatal("join escaped the fully occupied region reachable from the requested tile")
+	}
+	if p := snapshot(h2, unitClient(t, h2, "Fresh")); p.X != 24 || p.Y != 24 {
+		t.Fatal("join without a request did not use the spawn tile")
+	}
+}
+
+func TestProfileCannotCarryAPosition(t *testing.T) {
+	h, _ := testHub(t, testWorld())
+	c := unitClient(t, h, "Alice")
+	if err := h.handle(c, []byte(`{"type":"profile","name":"Alice","avatar":1,"x":120,"y":216,"facing":"left"}`)); err == nil {
+		t.Fatal("profile message carried a position")
+	}
+	if p := snapshot(h, c); p.X != 72 || p.Y != 360 || p.Avatar != 0 {
+		t.Fatal("refused profile changed the participant")
+	}
+}
+
 func TestGridStepStaysAtSourceUntilArrival(t *testing.T) {
 	h, clock := testHub(t, testWorld())
 	c := unitClient(t, h, "Alice")
@@ -910,6 +1009,56 @@ func TestProductionFrontendServing(t *testing.T) {
 			}
 			if got := recorder.Header().Get("Cache-Control"); got != tc.cache {
 				t.Errorf("Cache-Control = %q, want %q", got, tc.cache)
+			}
+		})
+	}
+}
+
+func welcomeBuild(t *testing.T, h *hub) (string, bool) {
+	t.Helper()
+	c := unitClient(t, h, "Alice")
+	var welcome map[string]json.RawMessage
+	if err := json.Unmarshal(<-c.send, &welcome); err != nil || string(welcome["type"]) != `"welcome"` {
+		t.Fatalf("first message is not a welcome: %v %s", err, welcome["type"])
+	}
+	build, present := welcome["build"]
+	var value string
+	if present {
+		if err := json.Unmarshal(build, &value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return value, present
+}
+
+func TestWelcomeReportsTheServedBuild(t *testing.T) {
+	h, _ := testHub(t, testWorld())
+	if build, present := welcomeBuild(t, h); present {
+		t.Fatalf("server without a frontend reported build %q", build)
+	}
+	for _, tc := range []struct{ name, html, build string }{
+		{"stamped", `<!doctype html><html><head><meta name="bespingle-build" content="2bf7650cfe9fb2e0"><title>Bespingle</title></head></html>`, "2bf7650cfe9fb2e0"},
+		{"unstamped", `<!doctype html><title>Bespingle</title>`, ""},
+		{"malformed", `<meta name="bespingle-build" content="not a build">`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.WriteFile(filepath.Join(directory, "index.html"), []byte(tc.html), 0644); err != nil {
+				t.Fatal(err)
+			}
+			frontend, err := newFrontendHandler(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = frontend.root.Close() })
+			if frontend.build != tc.build {
+				t.Fatalf("build = %q, want %q", frontend.build, tc.build)
+			}
+			h, _ := testHub(t, testWorld())
+			h.build = frontend.build
+			build, present := welcomeBuild(t, h)
+			if build != tc.build || present != (tc.build != "") {
+				t.Fatalf("welcome build = %q (present %v), want %q", build, present, tc.build)
 			}
 		})
 	}

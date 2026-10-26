@@ -230,11 +230,23 @@ try {
   assert.equal(await alice.getByRole('button', { name: 'Launch Scrimba', exact: true }).count(), 0, 'Chat history stays cleared');
   await alice.getByRole('button', { name: 'Resume Scrimba 1', exact: true }).click();
   await panel(alice).getByText('You solved it! 🎉', { exact: true }).waitFor();
+  const finishedID = (await latest(alice)).id;
+  await alice.evaluate((id) => window.__gameSocket.send(JSON.stringify({ type: 'scrimba-guess', id, turn: 0, emojis: [] })), finishedID);
+  await panel(alice).getByRole('alert').filter({ hasText: 'this Scrimba guess is no longer available' }).waitFor();
   await alice.keyboard.press('Escape');
   await panel(alice).waitFor({ state: 'hidden' });
   await panel(bob).getByRole('button', { name: 'Close Scrimba', exact: true }).click();
   await say(alice, 'Back to chat');
   await bob.getByRole('log', { name: 'Carpet messages' }).getByText('Back to chat', { exact: true }).waitFor();
+  // Office reconnects use a new player identity. Old private boards must not
+  // leak into the automatically rejoined session or prevent new games.
+  const previousID = await alice.evaluate(() => window.__selfId);
+  await alice.evaluate(() => window.__gameSocket.close());
+  await alice.waitForFunction((oldID) => window.__selfId !== oldID && document.querySelector('[data-testid="game-canvas"]')?.dataset.carpet, previousID);
+  assert.equal(await alice.getByRole('button', { name: /^Resume Scrimba/ }).count(), 0, 'A new identity has no previous private boards');
+  await say(alice, '/scrimba');
+  await panel(alice).getByRole('button', { name: /Your board/ }).waitFor();
+  assert.equal((await latest(alice)).players[0].guesses.length, 0, 'A rejoined identity can start a fresh game');
   assert.deepEqual(errors, []);
   console.log('Scrimba browser checks passed: launch, join, shared puzzle, independent progress, server redaction, completion, reopen, chat, mobile layout.');
 } finally {

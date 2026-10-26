@@ -2,6 +2,7 @@ import { defineConfig, normalizePath } from 'vite';
 import react from '@vitejs/plugin-react';
 import { build } from 'esbuild';
 import { resolve, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 
 // MediaPipe's WASM loader uses importScripts and requires a classic worker.
 // Vite bundles classic workers for production; serve the same format in dev.
@@ -25,8 +26,24 @@ const cameraWorkerDev = {
   },
 };
 
+// Stamp each build's identity into index.html for the page and the server to
+// read alike. Output names carry content hashes, so the same code yields the
+// same identity and any change to it yields a new one. Dev gets none.
+const buildIdentity = {
+  name: 'build-identity',
+  apply: 'build' as const,
+  transformIndexHtml: {
+    order: 'post' as const,
+    handler(_html: string, context: import('vite').IndexHtmlTransformContext) {
+      const names = Object.keys(context.bundle ?? {}).sort().join('\n');
+      const build = createHash('sha256').update(names).digest('hex').slice(0, 16);
+      return [{ tag: 'meta', attrs: { name: 'bespingle-build', content: build }, injectTo: 'head' as const }];
+    },
+  },
+};
+
 export default defineConfig({
-  plugins: [cameraWorkerDev, react()],
+  plugins: [cameraWorkerDev, react(), buildIdentity],
   server: {
     host: '127.0.0.1',
     port: 5555,
