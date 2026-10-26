@@ -52,7 +52,9 @@ async function stopServer() {
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || undefined,
   headless: true,
-  args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
+  // Contexts grant permissions explicitly. Auto-approving the browser UI would
+  // make clearPermissions() grant access again instead of returning to prompt.
+  args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
 });
 const errors = [];
 const pages = [];
@@ -111,6 +113,9 @@ const sockets = (page) => page.evaluate(() => window.__sockets);
 const inOffice = (page, timeout = 5000) => page.getByRole('button', { name: 'Edit profile', exact: true }).waitFor({ timeout });
 const joinForm = (page) => page.getByRole('button', { name: 'Enter the office', exact: true }).waitFor();
 const banner = (page) => page.getByText('Reconnecting…', { exact: true });
+const permissionStates = (page) => page.evaluate(async () => Object.fromEntries(await Promise.all(
+  ['microphone', 'camera'].map(async (name) => [name, (await navigator.permissions.query({ name })).state]),
+)));
 async function settled(page) {
   await page.waitForFunction(() => document.querySelector('[data-testid="game-canvas"]')?.dataset.moving === 'false');
 }
@@ -229,6 +234,7 @@ try {
   await devices.getByLabel('Your display name').fill('Ines');
   await devices.getByRole('button', { name: 'Enter the office', exact: true }).click();
   await inOffice(devices);
+  assert.deepEqual(await permissionStates(devices), { microphone: 'granted', camera: 'granted' }, 'The happy path starts with both permissions granted');
   await devices.locator('[data-testid="game-canvas"]').focus();
   await devices.keyboard.down('w');
   await devices.locator('.media-dialog').waitFor();
@@ -264,6 +270,7 @@ try {
   await devicesOffice.grantPermissions(['microphone'], { origin: url });
   await devices.reload();
   await inOffice(devices);
+  assert.deepEqual(await permissionStates(devices), { microphone: 'granted', camera: 'denied' }, 'Only microphone permission remains');
   await expectDevices(true, false);
   await note.waitFor();
   assert.match(await note.innerText(), /Your camera was left off/);
@@ -271,6 +278,7 @@ try {
   await devicesOffice.clearPermissions();
   await devices.reload();
   await inOffice(devices);
+  assert.deepEqual(await permissionStates(devices), { microphone: 'prompt', camera: 'prompt' }, 'Cleared permissions are not auto-granted by the browser');
   await note.waitFor();
   assert.match(await note.innerText(), /microphone and camera were left off/);
   await devices.waitForTimeout(500);
@@ -279,6 +287,17 @@ try {
   assert.equal(await devices.evaluate(() => window.__sawPrompt), false, 'Missing permission does not bring back the prompt');
   await devices.screenshot({ path: `${output}/02-left-off.png` });
   console.log('Without permission the devices stay off with a note, and nothing is requested');
+
+  await devicesOffice.grantPermissions([], { origin: url });
+  await devices.reload();
+  await inOffice(devices);
+  assert.deepEqual(await permissionStates(devices), { microphone: 'denied', camera: 'denied' }, 'The refusal case denies both permissions');
+  await note.waitFor();
+  assert.match(await note.innerText(), /microphone and camera were left off/);
+  assert.deepEqual(await captures(), [], 'Denied permissions do not trigger a capture request');
+  assert.equal(await devices.evaluate(() => window.__self.mic || window.__self.camera), false, 'Denied devices stay off');
+  assert.equal(await devices.evaluate(() => window.__sawPrompt), false, 'Denied permissions do not reopen the device prompt');
+  console.log('Denied permissions leave both devices off without requesting access');
 
   await devicesOffice.grantPermissions(['camera', 'microphone'], { origin: url });
   await devices.getByRole('button', { name: 'Leave office', exact: true }).click();
